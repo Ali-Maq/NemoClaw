@@ -3169,6 +3169,7 @@ dependencies = [
  "nemoclaw-backend",
  "nemoclaw-docker",
  "nemoclaw-openshell",
+ "nemoclaw-sdk",
  "nemoclaw-test-fixtures",
  "nemoclaw-tofu",
  "openshell-core",

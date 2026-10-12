@@ -92,7 +92,9 @@ None of them exposes ephemeral resources or provider functions.
 | `openshell_gateway` data source | [Gateway version and compute drivers](#gateway-capabilities) |
 
 The `openshell` provider takes the gateway `endpoint`, the `credential_env` variable holding its bearer credential, the `tls_ca_env`, `tls_certificate_env`, and `tls_key_env` variables naming mutual TLS files, and `destroy`, which permits deleting sandboxes during explicit teardown.
-When a registration names a managed vLLM or Ollama proxy credential, the provider reads the key from the owning container during apply, so the key never enters OpenTofu state.
+The bundled OpenShell provider includes NemoClaw's managed-service identity and credential checks.
+During apply, it reads Docker vLLM and Ollama proxy keys from their owning containers, and authenticated cluster vLLM keys through the verified model Pod from its separate credential PVC.
+The key never enters OpenTofu state.
 
 Inputs are typed:
 
@@ -140,6 +142,7 @@ resource "openshell_sandbox" "assistant" {
 The `fabric` provider takes the same gateway settings as the `openshell` provider.
 It also accepts `destroy`, but no Fabric type requires it: removing an agent configuration releases its binding without changing the sandbox.
 It reaches each sandbox's Fabric host by running commands in the sandbox through the gateway; `fabric_capabilities` instead reads the container engine named on it.
+The bundled Fabric provider includes NemoClaw's managed-service checks when it verifies a configuration's parent sandbox.
 
 ### NemoClaw Resources
 
