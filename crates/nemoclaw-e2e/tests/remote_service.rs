@@ -218,12 +218,15 @@ impl Scenario {
 
 // Every runtime plan, apply, export, or destroy after the service network
 // exists reads it, and the Docker provider waits 2 s before each read. Each
-// scenario therefore creates one runtime and runs every check that needs it.
+// scenario therefore creates one runtime and runs every check that needs it,
+// unless those checks would exceed the lifecycle per-test limit in
+// .config/test-budgets.yaml.
 //
 // vLLM recovery runs in the bearer scenario below. The runtime-independent
 // checks of an applied deployment (the readiness gate and pull policy reapply)
-// run once, against vLLM. Replacement protection runs for both model kinds;
-// the memory-limit check, whose compiled label does not depend on the kind,
+// run once, against vLLM. Replacement protection runs for both model kinds, in
+// scenarios of its own that keep the reapply and recovery scenarios under that
+// limit. The memory decrease, whose compiled label does not depend on the kind,
 // runs once, against Ollama. The provider's readiness and storage tests cover
 // their own observations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,7 +237,6 @@ async fn remote_model_reapply_and_drift_keep_bindings_and_stop_on_observation_fa
     assert_eq!(stable["pulls"], 1);
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = readiness_is_checked_on_each_apply(&s, &stable).await;
-    image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     removed_pull_policy_reapplies_without_pulling(&s, &stable).await;
@@ -251,11 +253,28 @@ async fn remote_ollama_recovers_reapplies_and_stops_on_observation_failure_keepi
     let stable = recover_lost_process_and_cache(&s, &volume).await;
     export_and_reapply_are_unchanged(&s, &stable).await;
     let state = s.runtime_state();
-    image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
-    memory_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
     plans_stop_on_observation_failure(&s, &stable, &state, json!({"transport_failure":true})).await;
     assert_no_probes(&s);
     incompatible_image_blocks_changes_but_not_teardown(&s, &stable["volume"]).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; isolated SSH/Docker and OpenShell fixtures"]
+async fn remote_vllm_preserve_refuses_image_change_and_recreate_plans_replacement() {
+    let s = Scenario::new("nvidia.fabric.openclaw", false, "vllm").await;
+    let stable = s.apply().await;
+    let state = s.runtime_state();
+    image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
+    assert_no_probes(&s);
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires NEMOCLAW_TEST_BUNDLE; isolated SSH/Docker and OpenShell fixtures"]
+async fn remote_ollama_preserve_refuses_image_and_memory_changes_and_recreate_plans_replacement() {
+    let s = Scenario::new("nvidia.fabric.openclaw", false, "ollama").await;
+    let stable = s.apply().await;
+    let state = s.runtime_state();
+    image_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
+    memory_change_plans_compute_replacement_without_effects(&s, &stable, &state).await;
+    assert_no_probes(&s);
 }
 
 // Bearer scenarios leave image compatibility, readiness, and transport checks,
