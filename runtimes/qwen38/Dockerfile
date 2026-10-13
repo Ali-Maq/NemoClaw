@@ -13,9 +13,6 @@ COPY --chmod=755 prepare.py verify.py /opt/nemoclaw/recipe/
 COPY nemoclaw-runtime /usr/local/bin/nemoclaw-runtime
 COPY supervisor-source.tar.gz supervisor.json /opt/nemoclaw/source/
 COPY Dockerfile build.json /opt/nemoclaw/source/
-COPY nemoclaw_vllm_routes.py test_vllm_auth.py /opt/nemoclaw/source/
-RUN python3 -c 'import shutil, sysconfig; shutil.copy("/opt/nemoclaw/source/nemoclaw_vllm_routes.py", sysconfig.get_path("purelib"))'
-RUN python3 -I /opt/nemoclaw/source/test_vllm_auth.py
 ENTRYPOINT ["/usr/local/bin/nemoclaw-runtime"]
 CMD []
 LABEL org.nemoclaw.inference.authentication="bearer-v1" \

@@ -21,7 +21,7 @@ required-features = ["execution"]
 workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["signal", "process", "io-util", "fs"] }
+tokio = { workspace = true, features = ["signal", "process", "io-util", "fs", "net"] }
 
 serde.workspace = true
 serde_json.workspace = true
@@ -43,10 +43,20 @@ process-wrap = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["process"], optional = true }
+# The bearer vLLM route filter; reqwest already locks these versions.
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", features = ["client", "http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 
 [features]
 default = ["execution"]
-execution = ["dep:process-wrap", "dep:rustix"]
+execution = [
+    "dep:process-wrap",
+    "dep:rustix",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

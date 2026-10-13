@@ -6,11 +6,20 @@ mod hardware;
 mod inline_recipe;
 mod process;
 mod recipe;
+mod routes;
 
 use crate::execution::supervisor::{self, Monitors};
-use crate::{CancellationToken, Error, vllm::Service};
+use crate::{
+    CancellationToken, Error,
+    vllm::{Service, arguments},
+};
 use process_wrap::tokio::{KillOnDrop, ProcessGroup};
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    net::{Ipv4Addr, SocketAddr},
+    path::Path,
+    time::Duration,
+};
 const ROOT: &str = "/data";
 pub(super) use crate::execution::report;
 
@@ -78,6 +87,17 @@ async fn run_owned(
         credential,
     )?;
     command.wrap(KillOnDrop).wrap(ProcessGroup::leader());
+    // Bearer vLLM listens on loopback behind the route filter, which owns the
+    // published port; bind it first so a port conflict fails startup.
+    let filter = match spec.authentication {
+        Some(_) => {
+            let port = |port| u16::try_from(port).map_err(|_| Error::State("invalid serving port"));
+            let listener = routes::bind(port(spec.serving.port)?).await?;
+            let vllm = SocketAddr::from((Ipv4Addr::LOCALHOST, port(arguments::listen_port(spec))?));
+            Some((listener, vllm))
+        }
+        None => None,
+    };
     let mut child = command
         .spawn()
         .map_err(|_| Error::State("inference process could not start"))?;
@@ -101,21 +121,28 @@ async fn run_owned(
     });
     let (ready_tx, ready) = tokio::sync::mpsc::channel(1);
     let health = tokio::spawn(async move { process::wait_ready(readiness, ready_tx).await });
-    let result = supervisor::supervise(
-        supervisor::Policy {
-            startup_timeout: Duration::from_secs(spec.serving.startup_timeout_seconds as u64),
-            protection: crate::hardware::ProtectionPolicy::for_service(spec)?,
-        },
-        child.as_mut(),
-        Monitors {
-            samples,
-            ready,
-            trip: trip.clone(),
-            report: &report,
-        },
-        cancel,
-    )
-    .await;
+    let policy = supervisor::Policy {
+        startup_timeout: Duration::from_secs(spec.serving.startup_timeout_seconds as u64),
+        protection: crate::hardware::ProtectionPolicy::for_service(spec)?,
+    };
+    let monitors = Monitors {
+        samples,
+        ready,
+        trip: trip.clone(),
+        report: &report,
+    };
+    let result = match filter {
+        Some((listener, vllm)) => {
+            let filter = tokio::spawn(routes::serve(
+                listener,
+                vllm,
+                routes::HEADER_TIMEOUT,
+                routes::connections(),
+            ));
+            routes::supervise(policy, child.as_mut(), monitors, cancel, filter).await
+        }
+        None => supervisor::supervise(policy, child.as_mut(), monitors, cancel).await,
+    };
     sampler.abort();
     health.abort();
     result

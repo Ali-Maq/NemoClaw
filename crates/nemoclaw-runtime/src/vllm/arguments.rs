@@ -57,6 +57,17 @@ impl<'a> Settings<'a> {
         }
     }
 }
+/// The port vLLM listens on. A bearer service's vLLM listens on loopback
+/// behind the supervisor's route filter, which serves `serving.port`; it takes
+/// the next port, or the one below for 65535, so the two never collide.
+pub fn listen_port(service: &Service) -> i64 {
+    let port = service.serving.port;
+    match service.authentication {
+        None => port,
+        Some(_) if port < super::constraints::PORT.max => port + 1,
+        Some(_) => port - 1,
+    }
+}
 pub fn arguments(
     service: &Service,
     model_directory: &str,
@@ -87,7 +98,11 @@ pub fn arguments(
         "--served-model-name",
         model.name,
         "--host",
-        "0.0.0.0",
+        if service.authentication.is_some() {
+            "127.0.0.1"
+        } else {
+            "0.0.0.0"
+        },
         "--tensor-parallel-size",
         "1",
         "--load-format",
@@ -95,14 +110,8 @@ pub fn arguments(
     ]
     .map(String::from)
     .into();
-    if service.authentication.is_some() {
-        args.extend([
-            "--middleware".into(),
-            "nemoclaw_vllm_routes.OpenAIRoutes".into(),
-        ]);
-    }
     for (flag, value) in [
-        ("--port", v.port.to_string()),
+        ("--port", listen_port(service).to_string()),
         (
             "--gpu-memory-utilization",
             service

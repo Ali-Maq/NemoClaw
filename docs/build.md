@@ -275,8 +275,8 @@ The inline recipe supplies preparation and verification tools; `kind: vllm` sele
 Managed containers use `/usr/local/bin/nemoclaw-runtime` and `NEMOCLAW_RUNTIME_SPEC`.
 
 The SDK checks a managed vLLM or Ollama image's runtime-spec label, required backend/recipe/authentication labels, and platform through the provider before creating runtime resources.
-Bearer vLLM also requires `org.nemoclaw.inference.routes=openai-v2`, which identifies the middleware that passes only authenticated inference requests and public `GET /health` to vLLM.
-Rebuild earlier bearer images that lack this label; do not add the label without including the middleware and matching supervisor.
+Bearer vLLM also requires `org.nemoclaw.inference.routes=openai-v2`, which identifies a supervisor that serves the published port and forwards only authenticated inference requests and public `GET /health` to vLLM on loopback.
+Rebuild earlier bearer images that lack this label; do not add the label to an image whose supervisor was built from an earlier revision.
 An already loaded image with a missing or incompatible runtime-spec label fails plan and apply with rebuild guidance.
 When the image must be acquired, plan reports compatibility as deferred; apply may pull the image, then checks it before creating storage, networks, or containers.
 A matching label establishes the declared runtime contract, not successful model loading or inference.

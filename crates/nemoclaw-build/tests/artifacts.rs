@@ -276,14 +276,9 @@ fn supervisor_archive_contains_only_runtime_owned_sources_and_notices() {
 }
 
 #[test]
-fn artifact_inputs_cannot_overwrite_retained_build_or_workload_inputs() {
-    for name in ["build.json", "nemoclaw_vllm_routes.py", "test_vllm_auth.py"] {
-        let input = serde_json::json!({"name":"fixture","platform":"linux_arm64","image":"local/fixture:test","sourceDateEpoch":1234,"files":["Dockerfile",name],"downloads":{}});
-        assert!(
-            nemoclaw_build::RuntimeArtifact::parse(&serde_json::to_vec(&input).unwrap()).is_err(),
-            "{name}"
-        );
-    }
+fn artifact_inputs_cannot_overwrite_the_retained_build_manifest() {
+    let input = br#"{"name":"fixture","platform":"linux_arm64","image":"local/fixture:test","sourceDateEpoch":1234,"files":["Dockerfile","build.json"],"downloads":{}}"#;
+    assert!(nemoclaw_build::RuntimeArtifact::parse(input).is_err());
 }
 
 #[test]

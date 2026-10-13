@@ -161,18 +161,30 @@ fn every_runtime_contract_setting_has_an_opentofu_attribute() {
 }
 
 #[test]
-fn bearer_runtime_launch_restricts_routes_without_changing_unauthenticated_services() {
+fn bearer_vllm_listens_on_loopback_beside_the_published_port_with_otherwise_unchanged_arguments() {
+    let after = |arguments: &[String], flag: &str| {
+        arguments
+            .iter()
+            .position(|argument| argument == flag)
+            .unwrap()
+            + 1
+    };
     let mut service = service();
-    service.authentication = None;
-    let public = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
-    assert!(!public.iter().any(|argument| argument == "--middleware"));
-    service.authentication = Some(super::ServiceAuthentication::Bearer);
-    let bearer = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
-    assert!(
-        bearer
-            .windows(2)
-            .any(|arguments| arguments == ["--middleware", "nemoclaw_vllm_routes.OpenAIRoutes"])
-    );
+    for (port, backend) in [(18888, "18889"), (65535, "65534")] {
+        service.serving.port = port;
+        service.authentication = None;
+        let mut expected = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
+        let (host, listen) = (after(&expected, "--host"), after(&expected, "--port"));
+        assert_eq!(expected[host], "0.0.0.0");
+        assert_eq!(expected[listen], port.to_string());
+        // Bearer vLLM listens only on loopback, behind the supervisor's route
+        // filter on the published port; nothing else in its launch changes.
+        expected[host] = "127.0.0.1".into();
+        expected[listen] = backend.into();
+        service.authentication = Some(super::ServiceAuthentication::Bearer);
+        let bearer = arguments::arguments(&service, "/data/model", 121 * GIB).unwrap();
+        assert_eq!(bearer, expected, "{port}");
+    }
 }
 
 #[test]

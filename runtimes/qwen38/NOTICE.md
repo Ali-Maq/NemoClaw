@@ -73,7 +73,6 @@ The archive includes the runtime crate and its policy attribution, a pruned `Car
 The supervisor is compiled offline from that exact archive.
 The archive excludes every `runtimes/` directory, including this recipe.
 This image retains its recipe scripts separately under `/opt/nemoclaw/source/` and `/opt/nemoclaw/recipe/`.
-The shared Apache-2.0 `nemoclaw_vllm_routes.py` and `test_vllm_auth.py` remain under `/opt/nemoclaw/source/`; each image build runs their GPU-free bearer-route check.
 `/opt/nemoclaw/source/Dockerfile` and `build.json` retain the selected image build instructions and manifest.
 `supervisor.json` records the compiler version, source version, binary hash, and archive hash.
 

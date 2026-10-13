@@ -280,7 +280,7 @@ Authenticated services require both `org.nemoclaw.inference.authentication=beare
 Do not supply `inferenceProviders[].credential` for a managed service.
 
 The supervisor creates a mode-0600 key in `/credentials/inference-key` on a separate credential volume under its own writer lock and reuses it after restart.
-It passes the key only to the vLLM child process through `VLLM_API_KEY`, then verifies `/v1/models` using bearer authentication before reporting readiness.
+It passes the key only to the vLLM child process through `VLLM_API_KEY`, then verifies `/v1/models` through the route filter below, using bearer authentication, before reporting readiness.
 Recipe environment maps cannot set `VLLM_API_KEY`.
 The OpenShell provider reads the key through the verified runtime container identity and installs it in OpenShell's provider credential store.
 Agent requests use their OpenShell placeholder credential.
@@ -288,16 +288,24 @@ YAML, plans, container launch settings, and OpenTofu state contain no generated 
 On Docker, the runtime's root user and Docker administrators can read the key and child environment.
 On Kubernetes and OpenShift, principals with `pods/exec` on the model Pod or permission to create Pods in the managed namespace, and node, kubelet, and storage administrators, can read it; see [credential access](security.md#credentials-and-authentication).
 The key authenticates the `/v1` requests below and does not provide TLS.
-In bearer mode, the NemoClaw image middleware passes only these requests to vLLM:
+In bearer mode, the supervisor serves the published port with HTTP/1.1 and forwards only these requests to vLLM:
 
 - `GET /v1/models` and `POST` to `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/messages`, or `/v1/messages/count_tokens`, each of which requires the key.
 - `GET /health`, which is public.
 
-Every other request returns HTTP 404 before reaching vLLM, with or without the key.
-This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
-WebSockets are disabled.
+vLLM listens only on `127.0.0.1` inside the container, at the port after `serving.port`, or at 65534 when `serving.port` is 65535.
+The supervisor compares the method and the path exactly as sent, without decoding or normalizing the path.
+It forwards the query string and end-to-end headers, including `Authorization`, removes hop-by-hop headers such as `Connection`, and streams request and response bodies.
+Because vLLM's server trusts forwarding headers from loopback, the supervisor replaces `X-Forwarded-For` with the connecting address and removes `X-Forwarded-Proto`; vLLM's access log shows that address with port 0.
+Every other request returns HTTP 404 with `{"error":"Not found"}` before reaching vLLM, with or without the key, and the supervisor does not log it.
+This includes `POST /invocations`, `OPTIONS` requests, `HEAD /health`, dot-segment or percent-encoded spellings such as `/v1/../invocations` and `/v1/%6Dodels`, a trailing slash such as `/v1/models/`, absolute-form request targets, requests that offer a protocol upgrade, such as WebSocket or the h2c offer of `curl --http2`, and management routes that recipe `VLLM_*` variables can enable, such as `/v1/load_lora_adapter`.
+An allowed request returns HTTP 400 with `{"error":"Bad request"}` when its body cannot be read, such as invalid chunked framing, and HTTP 502 while vLLM is not accepting connections.
+A client must send its request headers within 30 seconds.
+A client that closes its sending side before the response arrives is treated as disconnected.
+The supervisor serves at most 256 connections at a time, or fewer when the container's maximum open-file limit is below 640; later connections wait to be accepted.
+If the route filter fails, the supervisor stops vLLM and reports the failure.
 This restriction closes an upstream gap: the [native vLLM authentication middleware](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/entrypoints/serve/utils/server_utils.py) leaves `/invocations` unguarded, and an operator's test of an earlier image returned a chat completion through that route without a key.
-Omitting `authentication: bearer` leaves the upstream route behavior unchanged.
+Omitting `authentication: bearer` leaves the upstream route behavior unchanged; vLLM then serves the published port itself.
 Keep the whole listener on a trusted private network, including when `authentication: bearer` is enabled.
 For Docker, restrict access through the host's network controls.
 For Kubernetes and OpenShift, require a network plugin that enforces the generated supervisor-only NetworkPolicy; plan and apply warn about this dependency for bearer vLLM as well as services without authentication.
