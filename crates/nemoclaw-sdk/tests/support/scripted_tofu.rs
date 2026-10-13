@@ -13,8 +13,7 @@
 
 use nemoclaw_sdk::{
     CancellationToken, Deployment, ObservationError, Progress, Secrets, StepOutcome,
-    bundle::{Manifest, executable, hash_file, required_files},
-    compile::{Generations, OPENTOFU_VERSION, Target},
+    compile::{Generations, Target},
     config::Document,
     kubernetes::{GATEWAY_KIND, STORAGE_KIND, gateway::ADDRESS as HELM_RELEASE},
 };
@@ -22,7 +21,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
 };
 
 /// `@CONTROL@` and `@STATE@` become the control directory and the state
@@ -62,60 +61,20 @@ case "$1" in
 esac
 "##;
 
-/// A bundle whose files verify; only `libexec/tofu` can execute. Adapted from
-/// `deployment.rs::write_bundle`, which keeps its own copy because it also runs
-/// on Windows. The SDK requires `rust` to be non-empty and `version` to be a
-/// semantic version, so these values need not match the toolchain or the
-/// workspace version.
-fn write_bundle(directory: &Path, script: &str) {
-    let mut manifest = Manifest {
-        version: "0.1.0".into(),
-        rust: "1.98.1".into(),
-        opentofu: OPENTOFU_VERSION.into(),
-        files: Default::default(),
-    };
-    let tofu = format!("libexec/{}", executable("tofu"));
-    for name in required_files(&manifest.version).unwrap() {
-        let path = directory.join(&name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        if name == tofu {
-            crate::executable::write_executable(&path, script);
-        } else {
-            fs::write(&path, b"non-executable fixture").unwrap();
-        }
-        manifest.files.insert(name, hash_file(&path).unwrap());
-    }
-    fs::write(
-        directory.join("manifest.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
-}
-
-/// Scripted tests of one process run one at a time. `Deployment` holds a lock
-/// file for each operation, and a child that another thread forks while the lock
-/// is held keeps the lock until it executes, so a test's next operation can find
-/// the lock held. Nextest runs each test in its own process, where nothing
-/// waits here; `cargo test` runs them as threads of one process.
-static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
 /// A temporary bundle with a scripted `tofu`, a control directory, and the path
 /// of a state directory that `Deployment` creates. A test creates one.
 pub struct Scripted {
-    _turn: MutexGuard<'static, ()>,
     _directory: tempfile::TempDir,
     root: PathBuf,
 }
 
 impl Scripted {
     pub fn new() -> Self {
-        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
         let directory = tempfile::tempdir().unwrap();
         // The script compares its physical working directory with the state
         // directory, and a macOS temporary path traverses a symbolic link.
         let root = directory.path().canonicalize().unwrap();
         let scripted = Self {
-            _turn: turn,
             _directory: directory,
             root,
         };
@@ -131,7 +90,7 @@ impl Scripted {
         let script = SCRIPT
             .replace("@CONTROL@", &quoted(scripted.control()))
             .replace("@STATE@", &quoted(scripted.state()));
-        write_bundle(&scripted.bundle(), &script);
+        crate::bundle::write_bundle(&scripted.bundle(), Some(&script));
         scripted
     }
 
