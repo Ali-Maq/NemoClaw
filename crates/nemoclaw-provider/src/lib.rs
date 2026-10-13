@@ -8,6 +8,9 @@ pub use nemoclaw_tofu::*;
 mod capacity;
 pub mod cluster_services;
 mod discovery;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../test-support/executable.rs"]
+mod executable;
 mod gateway;
 pub mod hardware;
 mod hardware_data;
