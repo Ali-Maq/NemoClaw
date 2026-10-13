@@ -135,6 +135,60 @@ fn docker_model_updates_preserve_running_containers_unless_recreation_is_explici
 }
 
 #[test]
+fn docker_model_preservation_refuses_docker_models_but_not_cluster_models_of_the_same_name() {
+    // A cluster model has no Docker container: the Kubernetes service
+    // reconciler applies its updatePolicy to the model Pod. A Docker change at
+    // the address the same service would have on Docker is not its update.
+    for (docker, cluster) in [
+        (
+            include_str!("../../../../../examples/station/vllm.yaml"),
+            include_str!("../../../../../examples/kubernetes/local-vllm.yaml"),
+        ),
+        (
+            include_str!("../../../../../examples/managed-ollama-gpu.yaml"),
+            include_str!("../../../../../examples/kubernetes/local-ollama.yaml"),
+        ),
+    ] {
+        let [docker, cluster] =
+            [docker, cluster].map(|source| Document::parse(source.as_bytes()).unwrap());
+        let service = &cluster.spec.services["qwen"];
+        assert!(service.kubernetes().is_some());
+        for document in [&docker, &cluster] {
+            assert_eq!(
+                document.spec.services["qwen"].update_policy(),
+                Some(crate::services::ServiceUpdatePolicy::Preserve)
+            );
+        }
+        let address = crate::docker_compute::address(&service.model_address("qwen").unwrap());
+        let observations = |document: &Document, plan: &Plan| {
+            let record = Record::new(document.clone()).unwrap();
+            let targets = compile::runtime_targets(document, &record.generations).unwrap();
+            runtime_observations(document, &targets, &BTreeMap::new(), plan)
+        };
+        let running =
+            json!({"id": "running-model", "must_run": true, "memory": 65536, "memory_swap": 65536});
+        let mut lowered = running.clone();
+        lowered["memory"] = json!(16384);
+        for (actions, after) in [
+            (json!(["delete", "create"]), Value::Null),
+            (json!(["delete"]), Value::Null),
+            (json!(["update"]), lowered),
+        ] {
+            let plan = serde_json::from_value(json!({"resource_changes": [{
+                "address": address,
+                "change": {"actions": actions, "before": running, "after": after}
+            }]}))
+            .unwrap();
+            assert!(matches!(
+                observations(&docker, &plan),
+                Err(Error::DockerModelUpdateRefused { service }) if service == "qwen"
+            ));
+            observations(&cluster, &plan).unwrap();
+        }
+    }
+}
+
+#[test]
 fn bound_cluster_port_change_explains_required_teardown_before_runtime_reconciliation() {
     for source in [
         include_str!("../../../../../examples/kubernetes/local-vllm.yaml"),
