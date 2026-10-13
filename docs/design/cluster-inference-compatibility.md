@@ -68,7 +68,7 @@ This operator report explains the example budget; it is not deployment qualifica
 - [#12442](https://github.com/NVIDIA/NemoClaw/issues/12442) tracks the unmerged Fabric pin and changing descriptor contracts.
   As recorded in [#12732](https://github.com/NVIDIA/NemoClaw/issues/12732) on 2026-10-07, Fabric PRs [#318](https://github.com/NVIDIA/NeMo-Fabric/pull/318), [#324](https://github.com/NVIDIA/NeMo-Fabric/pull/324), and [#326](https://github.com/NVIDIA/NeMo-Fabric/pull/326) closed without merging; descriptor lookup in [#368](https://github.com/NVIDIA/NeMo-Fabric/pull/368) does not establish replacement planning, model protocol, or retained-state contracts.
   A future pin update must reconcile those consumers and qualify their behavior together.
-- [Fabric #298](https://github.com/NVIDIA/NeMo-Fabric/issues/298) owns bounded native health; [#12443](https://github.com/NVIDIA/NemoClaw/issues/12443) owns NemoClaw integration.
+- [Fabric #298](https://github.com/NVIDIA/NeMo-Fabric/issues/298) owns bounded native health; [#13031](https://github.com/NVIDIA/NemoClaw/issues/13031) owns NemoClaw integration.
   SDK apply requires a supported, passing health report; the reported explicit agent turns do not establish that readiness result.
 - [#12692](https://github.com/NVIDIA/NemoClaw/issues/12692) owns managed-gateway OIDC.
   Generated vLLM bearer storage and the gateway's development issuer have separate owners and lifetimes; neither establishes production gateway authentication.
