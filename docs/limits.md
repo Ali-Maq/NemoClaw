@@ -42,7 +42,7 @@ It is not deployment qualification and does not change the Docker-path limits ab
 
 | Limit | Issue |
 |---|---|
-| Real Fabric adapters report health as unsupported, so [apply fails at agent readiness](usage.md#fabric-health-during-apply) | [#12443](https://github.com/NVIDIA/NemoClaw/issues/12443) |
+| Real Fabric adapters report health as unsupported, so [apply fails at agent readiness](usage.md#fabric-health-during-apply) | [#13031](https://github.com/NVIDIA/NemoClaw/issues/13031) |
 | Managed llama.cpp, Model Router and Gemini | [#12035](https://github.com/NVIDIA/NemoClaw/issues/12035) |
 | Guides for named hosted providers such as NVIDIA, OpenAI, Anthropic, OpenRouter and Nous | [#12038](https://github.com/NVIDIA/NemoClaw/issues/12038) |
 | Managed NVIDIA NIM service | [#12649](https://github.com/NVIDIA/NemoClaw/issues/12649) |
