@@ -29,6 +29,7 @@ mod kubernetes_lifecycle;
 mod kubernetes_model_api;
 mod kubernetes_models;
 mod provider_protocol;
+mod references;
 mod runtime_image;
 mod service_capacity;
 mod service_readiness;

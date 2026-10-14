@@ -481,7 +481,11 @@ impl Operations {
             ("create", "", "configmaps", ""),
             ("create", "", "services", ""),
             ("create", "networking.k8s.io", "networkpolicies", ""),
+            // Readiness execs through a WebSocket upgrade, an HTTP GET. The API
+            // server authorizes it as `get`; Kubernetes with
+            // AuthorizePodWebsocketUpgradeCreatePermission also requires `create`.
             ("create", "", "pods", "exec"),
+            ("get", "", "pods", "exec"),
             ("list", "discovery.k8s.io", "endpointslices", ""),
         ] {
             let review = serde_json::from_value(serde_json::json!({"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"namespace":spec.namespace(),"verb":verb,"group":group,"resource":resource,"subresource":subresource}}})).map_err(|_| ObservationError::Query)?;

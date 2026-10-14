@@ -278,10 +278,18 @@ pub(super) fn phase(
 }
 
 fn failure(error: kube::Error) -> ObservationError {
+    use kube::client::UpgradeConnectionError::ProtocolSwitch;
     match error {
         kube::Error::Api(status) if status.code == 401 => ObservationError::Authentication,
         kube::Error::Api(status) if status.code == 403 => ObservationError::Permission,
         kube::Error::Api(_) => ObservationError::Query,
+        // The API server refuses an unauthorized exec upgrade before switching protocols.
+        kube::Error::UpgradeConnection(ProtocolSwitch(code)) if code.as_u16() == 401 => {
+            ObservationError::Authentication
+        }
+        kube::Error::UpgradeConnection(ProtocolSwitch(code)) if code.as_u16() == 403 => {
+            ObservationError::Permission
+        }
         _ => ObservationError::Transport,
     }
 }

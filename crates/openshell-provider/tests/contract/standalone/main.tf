@@ -13,18 +13,29 @@ variable "enabled" { default = true }
 variable "destroying" { default = false }
 variable "image" { default = "fixture@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 provider "openshell" {
-  endpoint = var.endpoint
-  destroy  = var.destroying
+  destroy = var.destroying
+}
+locals {
+  gateway = {
+    type                = "openshell_gateway"
+    endpoint = var.endpoint
+    credential_env      = ""
+    tls_ca_env          = ""
+    tls_certificate_env = ""
+    tls_key_env         = ""
+  }
 }
 resource "openshell_workspace" "example" {
+  gateway    = local.gateway
   name       = "standalone"
   owner      = "standalone-owner"
   generation = "workspace-generation"
   lifecycle { prevent_destroy = true }
 }
 resource "openshell_provider_profile" "inference" {
+  gateway = local.gateway
   count         = var.enabled ? 1 : 0
-  workspace     = openshell_workspace.example.name
+  workspace     = openshell_workspace.example.ref
   name          = "nemoclaw-inference-local"
   owner         = openshell_workspace.example.owner
   generation    = "provider-generation"
@@ -33,16 +44,18 @@ resource "openshell_provider_profile" "inference" {
   binaries      = var.binaries
 }
 resource "openshell_provider_registration" "inference" {
+  gateway = local.gateway
   count      = var.enabled ? 1 : 0
-  workspace  = openshell_workspace.example.name
+  workspace  = openshell_workspace.example.ref
   name       = "local"
   owner      = openshell_workspace.example.owner
   generation = "provider-generation"
   endpoint   = openshell_provider_profile.inference[0].endpoint
 }
 resource "openshell_sandbox" "agent" {
+  gateway = local.gateway
   count               = var.enabled ? 1 : 0
-  workspace           = openshell_workspace.example.name
+  workspace           = openshell_workspace.example.ref
   name                = "assistant"
   owner               = openshell_workspace.example.owner
   generation          = "sandbox-generation"
@@ -50,7 +63,7 @@ resource "openshell_sandbox" "agent" {
   agent_name          = "assistant"
   agent_runtime       = "fabric"
   runtime_json   = var.runtime_json
-  provider_names = [openshell_provider_registration.inference[0].name]
+  providers      = [openshell_provider_registration.inference[0].ref]
   policy {
     managed "nemoclaw-inference-local-fcb7b1f1af3733764900def4" {
       endpoints {

@@ -31,7 +31,7 @@ struct Controls {
     request_failure: Option<RequestFailure>,
     rejected_requests: Vec<Value>,
     create_failure: Option<(String, bool, u16)>,
-    denied_resource: Option<String>,
+    denied_access: Option<(Option<String>, String)>,
     delete_delay: Option<(String, u32)>,
     deleting: BTreeMap<String, u32>,
     pod_identity: Option<u32>,
@@ -134,8 +134,14 @@ impl Objects {
     pub fn reject_create(&self, kind: &str) {
         self.2.lock().unwrap().create_failure = Some((kind.into(), false, 403));
     }
+    /// Deny every access review of `resource` and its subresources.
     pub fn deny_access(&self, resource: &str) {
-        self.2.lock().unwrap().denied_resource = Some(resource.into());
+        self.2.lock().unwrap().denied_access = Some((None, resource.into()));
+    }
+    /// Deny access reviews of one verb on `resource`, which may name a
+    /// subresource as `pods/exec`.
+    pub fn deny_verb(&self, verb: &str, resource: &str) {
+        self.2.lock().unwrap().denied_access = Some((Some(verb.into()), resource.into()));
     }
     pub fn delay_deletion(&self, kind: &str, reads: u32) {
         self.2.lock().unwrap().delete_delay = Some((kind.into(), reads));
@@ -266,16 +272,18 @@ impl Objects {
                     return Some((code, json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","code":code,"message":message}).to_string().into_bytes()));
                 }
                 if object["kind"] == "SelfSubjectAccessReview" {
-                    let denied =
-                        self.2
-                            .lock()
-                            .unwrap()
-                            .denied_resource
-                            .as_ref()
-                            .is_some_and(|resource| {
-                                object["spec"]["resourceAttributes"]["resource"]
-                                    == resource.as_str()
-                            });
+                    let attributes = &object["spec"]["resourceAttributes"];
+                    let denied = self.2.lock().unwrap().denied_access.as_ref().is_some_and(
+                        |(verb, resource)| {
+                            let (resource, subresource) =
+                                resource.split_once('/').unwrap_or((resource, ""));
+                            verb.as_ref()
+                                .is_none_or(|verb| attributes["verb"] == verb.as_str())
+                                && attributes["resource"] == resource
+                                && (subresource.is_empty()
+                                    || attributes["subresource"] == subresource)
+                        },
+                    );
                     object["status"] = json!({"allowed": !denied});
                     return Some((201, object.to_string().into_bytes()));
                 }

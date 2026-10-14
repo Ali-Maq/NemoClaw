@@ -797,6 +797,56 @@ async fn model_preflight_checks_admission_and_permissions_without_creating_resou
 }
 
 #[tokio::test]
+async fn an_identity_without_get_on_pods_exec_is_refused_before_storage_or_a_pod_is_created() {
+    // Readiness execs through a WebSocket upgrade, an HTTP GET; `create`
+    // alone cannot read the runtime status.
+    use nemoclaw_sdk::ObservationError;
+    for storage_exists in [false, true] {
+        let spec = spec("ollama", false);
+        let objects = crate::kube_api::Objects::default();
+        let directory = tempfile::tempdir().unwrap();
+        let (_fixture, operations) = operations(&objects, directory.path(), &spec).await;
+        if storage_exists {
+            operations
+                .ensure_storage(&spec.storage(), None)
+                .await
+                .unwrap();
+        }
+        objects.deny_verb("get", "pods/exec");
+        let before = objects.0.lock().unwrap().clone();
+        assert_eq!(
+            operations.preflight(&spec.storage(), None).await,
+            Err(ObservationError::Permission)
+        );
+        assert_eq!(
+            operations.ensure_storage(&spec.storage(), None).await,
+            Err(ObservationError::Permission)
+        );
+        assert_eq!(
+            operations.preflight_workload(&spec).await,
+            Err(ObservationError::Permission)
+        );
+        assert_eq!(
+            operations.ensure(&spec, None).await,
+            Err(ObservationError::Permission)
+        );
+        assert_eq!(*objects.0.lock().unwrap(), before, "{storage_exists}");
+        assert!(objects.get("v1", "Pod", "agents", &spec.name).is_none());
+        assert_eq!(
+            objects
+                .get(
+                    "v1",
+                    "PersistentVolumeClaim",
+                    "agents",
+                    &format!("{}-data", spec.name)
+                )
+                .is_some(),
+            storage_exists
+        );
+    }
+}
+
+#[tokio::test]
 async fn replacement_admission_rejection_preserves_the_running_model_and_its_receipt() {
     for backend in ["vllm", "ollama"] {
         for rejected_kind in ["Pod", "ConfigMap"] {

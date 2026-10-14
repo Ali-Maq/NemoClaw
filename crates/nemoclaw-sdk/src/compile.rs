@@ -233,6 +233,16 @@ fn targets_with_plans(
                 .insert("credential_source".into(), source);
         }
     }
+    // OpenShell objects and Fabric configurations name their gateway.
+    let gateway = gateway_values(&document.spec.gateway);
+    for target in &mut result {
+        if nemoclaw_openshell::references(&target.kind)
+            .iter()
+            .any(|reference| reference.kind == nemoclaw_openshell::GATEWAY_TYPE)
+        {
+            target.values.extend(gateway.clone());
+        }
+    }
     result.extend(service_plans.targets().cloned());
     Ok(result)
 }
@@ -355,6 +365,30 @@ pub(super) fn gateway_error_message(reference: &str) -> String {
     )
 }
 
+/// The gateway data source's inputs: its connection and required drivers.
+fn gateway_data(connection: &Value, drivers: Value) -> Value {
+    let mut data = connection.clone();
+    data["required_compute_drivers"] = drivers;
+    data
+}
+
+/// The gateway connection a deployment's objects carry in their rows.
+fn gateway_values(gateway: &crate::config::Gateway) -> BTreeMap<String, String> {
+    let connection = gateway_provider(gateway);
+    nemoclaw_openshell::GATEWAY_FIELDS
+        .iter()
+        .map(|(attribute, field)| {
+            (
+                (*field).to_owned(),
+                connection[*attribute]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn gateway_provider(gateway: &crate::config::Gateway) -> Value {
     let mut provider = json!({"endpoint":gateway.endpoint()});
     if let Some(c) = gateway.credential() {
@@ -374,8 +408,30 @@ pub(crate) fn gateway_provider(gateway: &crate::config::Gateway) -> Value {
     provider
 }
 
+/// The gateway's `ref` as a literal object, for graphs without its data source.
+pub(crate) fn gateway_ref(gateway: &crate::config::Gateway) -> Value {
+    let connection = gateway_provider(gateway);
+    let mut reference = serde_json::Map::new();
+    reference.insert(
+        nemoclaw_tofu::REF_TYPE.into(),
+        json!(nemoclaw_openshell::GATEWAY_TYPE),
+    );
+    for (attribute, _) in nemoclaw_openshell::GATEWAY_FIELDS {
+        reference.insert(
+            attribute.into(),
+            json!(connection[attribute].as_str().unwrap_or_default()),
+        );
+    }
+    Value::Object(reference)
+}
+
+/// The expression every OpenShell object and Fabric configuration takes as `gateway`.
+pub(crate) fn gateway_ref_expression() -> String {
+    format!("${{{GATEWAY_CAPABILITIES_ADDRESS}.ref}}")
+}
+
 fn graph_base(document: &Document, version: &str) -> Result<Value, ConfigError> {
-    let provider = gateway_provider(&document.spec.gateway);
+    let connection = gateway_provider(&document.spec.gateway);
     let drivers = [document.spec.gateway.runtime().provider.openshell_driver()];
     let mut graph = json!({
         "terraform":{"required_version":format!("= {OPENTOFU_VERSION}"),"required_providers":{
@@ -385,8 +441,8 @@ fn graph_base(document: &Document, version: &str) -> Result<Value, ConfigError> 
         }},
         // The nemoclaw provider reaches engines and clusters named on each
         // resource; only the gateway providers take the connection.
-        "provider":{"nemoclaw":{},"openshell":provider.clone(),"fabric":provider}, "resource":{},
-        "data":{"openshell_gateway":{"current":{"required_compute_drivers":drivers}}}
+        "provider":{"nemoclaw":{},"openshell":{},"fabric":{}}, "resource":{},
+        "data":{"openshell_gateway":{"current":gateway_data(&connection, json!(drivers))}}
     });
     crate::discovery_graph::populate(&mut graph, document)?;
     Ok(graph)
@@ -430,9 +486,6 @@ fn compile_with_plans(
     }
     for target in targets {
         let mut attributes = serde_json::to_value(&target.values).expect("string map");
-        if target.values.contains_key("workspace") {
-            attributes["workspace"] = json!("${openshell_workspace.deployment.name}");
-        }
         for field in ["credential_source", "cluster_source"] {
             if let Some(value) = attributes[field].as_str() {
                 attributes[field] = json!(value.replace("${", "$${").replace("%{", "%%{"));
@@ -459,6 +512,53 @@ fn compile_with_plans(
                 crate::docker_compute::literal(&mut value);
                 attributes[input.attribute] = value;
             }
+        }
+        // Rows name other objects; OpenTofu takes their refs, which also
+        // order those objects first.
+        for reference in nemoclaw_openshell::references(&target.kind) {
+            let object = attributes.as_object_mut().expect("attribute object");
+            let carried: Vec<_> = reference
+                .fields
+                .iter()
+                .filter_map(|(_, field)| object.remove(*field))
+                .collect();
+            let Some(encoded) = carried.into_iter().next() else {
+                continue;
+            };
+            if reference.kind == nemoclaw_openshell::GATEWAY_TYPE {
+                attributes[reference.attribute] = json!(gateway_ref_expression());
+                continue;
+            }
+            let encoded = encoded.as_str().unwrap_or_default();
+            if encoded.is_empty() {
+                continue;
+            }
+            let address = |name: &str| {
+                targets
+                    .iter()
+                    .find(|candidate| {
+                        nemoclaw_openshell::type_name(&candidate.kind) == reference.kind
+                            && candidate.values.get("name").map(String::as_str) == Some(name)
+                    })
+                    .map(|candidate| format!("${{{}.ref}}", candidate.address))
+                    .ok_or_else(|| {
+                        ConfigError::new(
+                            "a reference names an object the deployment does not declare",
+                        )
+                    })
+            };
+            attributes[reference.attribute] = if reference.list {
+                let names: Vec<String> = serde_json::from_str(encoded)
+                    .map_err(|_| ConfigError::new("invalid reference list"))?;
+                json!(
+                    names
+                        .iter()
+                        .map(|name| address(name))
+                        .collect::<Result<Vec<_>, _>>()?
+                )
+            } else {
+                json!(address(encoded)?)
+            };
         }
         if target.kind == "provider_profile" {
             attributes["binaries"] = json!(format!(
@@ -554,14 +654,15 @@ fn compile_with_plans(
     }
     // timestamp() is unknown while planning. Its nonempty test becomes a
     // stable true at apply, forcing a fresh read without perpetual state drift.
-    let apply_readiness = json!({
-        "required_compute_drivers":graph["data"]["openshell_gateway"]["current"]["required_compute_drivers"],
-        "read_trigger":"${timestamp() != \"\"}",
-        "lifecycle":{"postcondition":[{
-            "condition":"${self.compatible}",
-            "error_message":gateway_error_message("self")
-        }]}
-    });
+    let mut apply_readiness = gateway_data(
+        &gateway_provider(&document.spec.gateway),
+        graph["data"]["openshell_gateway"]["current"]["required_compute_drivers"].clone(),
+    );
+    apply_readiness["read_trigger"] = json!("${timestamp() != \"\"}");
+    apply_readiness["lifecycle"] = json!({"postcondition":[{
+        "condition":"${self.compatible}",
+        "error_message":gateway_error_message("self")
+    }]});
     let sandbox_readiness: BTreeMap<_, _> = document
         .spec
         .sandboxes
@@ -580,12 +681,16 @@ fn compile_with_plans(
             ]
             .into_iter()
             .map(|name| {
+                // The sandbox takes its workspace as a ref; its own ref
+                // carries the workspace name.
+                let attribute = if name == "workspace" { "ref.workspace" } else { name };
                 (
                     name.to_owned(),
-                    json!(format!("${{openshell_sandbox.{}.{name}}}", sandbox.name)),
+                    json!(format!("${{openshell_sandbox.{}.{attribute}}}", sandbox.name)),
                 )
             })
             .collect();
+            readiness.insert("gateway".into(), json!(gateway_ref_expression()));
             readiness.insert(
                 "config_json".into(),
                 json!(format!(

@@ -274,6 +274,36 @@ async fn runtime_reads_reject_identity_changes_during_status_exec() {
 }
 
 #[tokio::test]
+async fn refused_exec_upgrades_report_authentication_and_permission_without_retrying() {
+    for (code, expected) in [
+        (401, ObservationError::Authentication),
+        (403, ObservationError::Permission),
+        (500, ObservationError::Transport),
+    ] {
+        let harness = Harness::new("ollama", false).await;
+        let exec = format!("/api/v1/namespaces/agents/pods/{}/exec", harness.spec.name);
+        let before = harness.objects.0.lock().unwrap().clone();
+        harness.objects.reject_request("GET", &exec, false, code);
+        assert_eq!(
+            harness.operations.read(&harness.spec, None).await,
+            Err(expected.clone()),
+            "{code}"
+        );
+        assert_eq!(harness.objects.rejected_requests().len(), 1, "{code}");
+        if code != 500 {
+            harness.objects.reject_request("GET", &exec, false, code);
+            assert_eq!(
+                harness.operations.wait_ready(&harness.spec).await,
+                Err(expected),
+                "{code}"
+            );
+            assert_eq!(harness.objects.rejected_requests().len(), 2, "{code}");
+        }
+        assert_eq!(*harness.objects.0.lock().unwrap(), before, "{code}");
+    }
+}
+
+#[tokio::test]
 async fn credential_reads_reject_identity_changes_before_and_during_exec() {
     for change in [
         Change::PodUid,
