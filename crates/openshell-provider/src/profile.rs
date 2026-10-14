@@ -1266,4 +1266,308 @@ mod tests {
             );
         }
     }
+    const FIXTURE_CLUSTER_SOURCE: &str = "fixture-cluster-source";
+    const CLUSTER_ENDPOINT: &str = "http://model.agents.svc.cluster.local:8000/v1";
+
+    /// Accepts only the fixture cluster source; tests supply observed addresses.
+    struct ClusterServices;
+
+    #[async_trait::async_trait]
+    impl Services for ClusterServices {
+        fn validate_credential_source(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), ObservationError> {
+            Err(ObservationError::Incomplete)
+        }
+
+        async fn resolve_credential_source(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<String, ObservationError> {
+            panic!("profile tests must not resolve credentials")
+        }
+
+        fn validate_cluster_source(&self, fields: &Row) -> Result<(), ObservationError> {
+            if fields.get("cluster_source").map(String::as_str) == Some(FIXTURE_CLUSTER_SOURCE)
+                && fields.get("owner").is_some_and(|owner| !owner.is_empty())
+            {
+                Ok(())
+            } else {
+                Err(ObservationError::BindingMismatch)
+            }
+        }
+
+        async fn cluster_addresses(
+            &self,
+            _: &Row,
+        ) -> Result<Vec<std::net::IpAddr>, ObservationError> {
+            panic!("profile tests must supply observed addresses explicitly")
+        }
+    }
+
+    /// A sandbox whose managed inference rule takes its addresses from the
+    /// cluster profile it uses, and that profile's desired fields.
+    fn cluster_case() -> (Row, Row) {
+        let rows = nemoclaw_test_fixtures::openshell::contract_rows("fabric-openclaw");
+        let row = |kind: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == kind)
+                .unwrap()
+                .1
+                .clone()
+        };
+        let mut fields = row("provider_profile");
+        fields.insert("endpoint".into(), CLUSTER_ENDPOINT.into());
+        fields.insert("cluster_source".into(), FIXTURE_CLUSTER_SOURCE.into());
+        fields.insert(
+            "cluster_addresses".into(),
+            r#"["10.96.0.42","fd00::42"]"#.into(),
+        );
+        let mut sandbox = row("sandbox");
+        let mut policy: serde_json::Value = serde_json::from_str(&sandbox["policy_json"]).unwrap();
+        let endpoint = &mut policy["managed"][fields["name"].as_str()]["endpoints"][0];
+        endpoint["host"] = "model.agents.svc.cluster.local".into();
+        endpoint["port"] = 8000.into();
+        endpoint["allowed_ips"] = serde_json::json!([]);
+        policy["cluster_grants"] = serde_json::json!([fields["name"]]);
+        sandbox.insert("policy_json".into(), policy.to_string());
+        (sandbox, fields)
+    }
+
+    #[test]
+    fn docker_services_reject_cluster_profiles() {
+        let (_, fields) = cluster_case();
+        assert_eq!(
+            native_definition(&fields, &DockerServices).err(),
+            Some(ObservationError::BindingMismatch)
+        );
+    }
+
+    #[test]
+    fn owned_cluster_profiles_grant_exact_observed_addresses_and_reject_others() {
+        let (_, fields) = cluster_case();
+        let mut profile = native_definition(&fields, &ClusterServices).unwrap();
+        assert_eq!(
+            profile.endpoints[0].allowed_ips,
+            ["10.96.0.42/32", "fd00::42/128"]
+        );
+        assert_eq!(profile.annotations[CLUSTER_SOURCE], FIXTURE_CLUSTER_SOURCE);
+        profile.resource_version = 1;
+        profile.source = "user".into();
+        profile.scope = "workspace".into();
+        let observed = row(
+            profile.clone(),
+            "workspace",
+            &profile.id,
+            true,
+            &ClusterServices,
+        )
+        .unwrap();
+        assert_eq!(observed["cluster_source"], FIXTURE_CLUSTER_SOURCE);
+        assert!(!observed.contains_key("cluster_addresses"));
+        for addresses in [
+            r#"[]"#,
+            r#"["255.255.255.255"]"#,
+            r#"["::ffff:127.0.0.1"]"#,
+            r#"["::ffff:10.0.0.1"]"#,
+            r#"["10.0.0.0/8"]"#,
+        ] {
+            let mut want = fields.clone();
+            want.insert("cluster_addresses".into(), addresses.into());
+            assert!(
+                native_definition(&want, &ClusterServices).is_err(),
+                "{addresses}"
+            );
+        }
+        let mut missing = fields.clone();
+        missing.remove("cluster_addresses");
+        assert!(native_definition(&missing, &ClusterServices).is_err());
+        let mut broader = profile.clone();
+        broader.endpoints[0].allowed_ips = vec!["10.0.0.0/8".into()];
+        assert!(row(broader, "workspace", &profile.id, true, &ClusterServices).is_err());
+    }
+
+    #[test]
+    fn cluster_grants_resolve_the_endpoint_ambiguity_with_the_provider_profile() {
+        let (sandbox, fields) = cluster_case();
+        let profile = native_definition(&fields, &ClusterServices).unwrap();
+        let grants = [(profile.id.clone(), profile.endpoints[0].allowed_ips.clone())].into();
+        let layer = openshell_policy::ProviderPolicyLayer {
+            rule_name: "_provider_fixture".into(),
+            rule: proto::NetworkPolicyRule {
+                name: "_provider_fixture".into(),
+                endpoints: profile.endpoints,
+                binaries: profile.binaries,
+            },
+        };
+        let ungranted = openshell_policy::compose_effective_policy(
+            &row_policy(&sandbox).unwrap(),
+            std::slice::from_ref(&layer),
+        );
+        assert_eq!(
+            openshell_policy::find_endpoint_ambiguities(&ungranted).len(),
+            1
+        );
+        let request = connected::create_sandbox_request(&sandbox, &grants).unwrap();
+        let actual = request.spec.unwrap().policy.unwrap();
+        let effective = openshell_policy::compose_effective_policy(&actual, &[layer]);
+        let conflicts = openshell_policy::find_endpoint_ambiguities(&effective);
+        assert!(conflicts.is_empty(), "{conflicts:?}");
+    }
+
+    #[tokio::test]
+    async fn profile_removal_validates_recorded_grants_when_the_service_is_absent() {
+        let (_, fields) = cluster_case();
+        let mut profile = native_definition(&fields, &ClusterServices).unwrap();
+        profile.resource_version = 1;
+        profile.source = "user".into();
+        profile.scope = "workspace".into();
+        let check = |profile: proto::ProviderProfile, removing, observed| async move {
+            let id = profile.id.clone();
+            checked_profile_row_with(
+                profile,
+                "workspace",
+                &id,
+                true,
+                removing,
+                &ClusterServices,
+                |_| async { observed },
+            )
+            .await
+        };
+        let absent = Err(ObservationError::BindingMismatch);
+        assert!(check(profile.clone(), false, absent.clone()).await.is_err());
+        assert!(check(profile.clone(), true, absent.clone()).await.is_ok());
+        let moved = Ok(vec!["10.96.0.43".parse().unwrap()]);
+        assert_eq!(
+            check(profile.clone(), false, moved).await.err(),
+            Some(ObservationError::BindingMismatch)
+        );
+        profile.endpoints[0].allowed_ips = vec!["10.0.0.0/8".into()];
+        assert!(check(profile, true, absent).await.is_err());
+    }
+
+    #[test]
+    fn cluster_sandbox_grants_require_the_matching_owned_profile_and_exact_host_addresses() {
+        let (sandbox, fields) = cluster_case();
+        let profile = native_definition(&fields, &ClusterServices).unwrap();
+        let addresses =
+            cluster_grant(&sandbox, &profile.id, &profile, &fields, &ClusterServices).unwrap();
+        let grants: network::ClusterGrants = [(profile.id.clone(), addresses)].into();
+        assert!(connected::create_sandbox_request(&sandbox, &grants).is_ok());
+        for replacement in [
+            vec![],
+            vec!["10.0.0.0/8".into()],
+            vec!["::ffff:10.0.0.1/128".into()],
+            vec!["255.255.255.255/32".into()],
+            vec![
+                "10.96.0.42/32".into(),
+                "10.96.0.43/32".into(),
+                "10.96.0.44/32".into(),
+            ],
+            vec!["10.96.0.42/32".into(), "10.96.0.42/32".into()],
+        ] {
+            let mut bad = grants.clone();
+            bad.insert(profile.id.clone(), replacement);
+            assert!(connected::create_sandbox_request(&sandbox, &bad).is_err());
+        }
+        assert!(connected::create_sandbox_request(&sandbox, &Default::default()).is_err());
+        let mut extra = grants.clone();
+        extra.insert("unexpected".into(), vec!["10.96.0.43/32".into()]);
+        assert!(connected::create_sandbox_request(&sandbox, &extra).is_err());
+        for field in ["owner", "cluster_source"] {
+            let mut wrong = fields.clone();
+            wrong.remove(field);
+            assert!(
+                cluster_grant(&sandbox, &profile.id, &profile, &wrong, &ClusterServices).is_err(),
+                "{field}"
+            );
+        }
+        for field in ["host", "port", "path"] {
+            let mut wrong = profile.clone();
+            match field {
+                "host" => wrong.endpoints[0].host = "foreign.example".into(),
+                "port" => wrong.endpoints[0].port += 1,
+                _ => wrong.endpoints[0].path = "/**".into(),
+            }
+            assert!(
+                cluster_grant(&sandbox, &profile.id, &wrong, &fields, &ClusterServices).is_err(),
+                "{field}"
+            );
+        }
+        let mut unlisted = sandbox.clone();
+        unlisted.insert("provider_names_json".into(), "[]".into());
+        assert!(
+            cluster_grant(&unlisted, &profile.id, &profile, &fields, &ClusterServices).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_refresh_verifies_current_grants_but_removal_uses_recorded_policy() {
+        let (sandbox, fields) = cluster_case();
+        let profile = native_definition(&fields, &ClusterServices).unwrap();
+        let grants: network::ClusterGrants =
+            [(profile.id.clone(), profile.endpoints[0].allowed_ips.clone())].into();
+        let request = connected::create_sandbox_request(&sandbox, &grants).unwrap();
+        let response = proto::SandboxResponse {
+            sandbox: Some(proto::Sandbox {
+                metadata: Some(proto::ObjectMeta {
+                    id: "sandbox-id".into(),
+                    name: request.name,
+                    workspace: sandbox["workspace"].clone(),
+                    labels: request.labels,
+                    annotations: request.annotations,
+                    ..Default::default()
+                }),
+                spec: request.spec,
+                status: Some(proto::SandboxStatus {
+                    phase: proto::SandboxPhase::Ready as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (workspace, name) = (&sandbox["workspace"], &sandbox["name"]);
+        let check = |response, removing, observed| async move {
+            checked_sandbox_row_with(response, workspace, name, removing, |_| async { observed })
+                .await
+        };
+        let current = check(response.clone(), false, Ok(grants.clone()))
+            .await
+            .unwrap();
+        assert_eq!(current.2, grants);
+        let mut moved = grants.clone();
+        moved.insert(profile.id, vec!["10.96.0.43/32".into()]);
+        assert!(check(response.clone(), false, Ok(moved)).await.is_err());
+        let absent = Err(ObservationError::BindingMismatch);
+        assert!(
+            check(response.clone(), false, absent.clone())
+                .await
+                .is_err()
+        );
+        assert!(check(response.clone(), true, absent.clone()).await.is_ok());
+        let mut drift = response;
+        drift
+            .sandbox
+            .as_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .policy
+            .as_mut()
+            .unwrap()
+            .filesystem
+            .as_mut()
+            .unwrap()
+            .read_write
+            .push("/".into());
+        assert!(check(drift, true, absent).await.is_err());
+    }
 }

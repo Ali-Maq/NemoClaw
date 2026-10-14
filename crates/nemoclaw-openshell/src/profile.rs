@@ -191,6 +191,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cluster_profiles_accept_only_plain_service_endpoints_and_unicast_addresses() {
+        let endpoint = "http://model.agents.svc.cluster.local:8000/v1";
+        let addresses: Vec<std::net::IpAddr> =
+            vec!["10.96.0.42".parse().unwrap(), "fd00::42".parse().unwrap()];
+        let cluster = |endpoint: &str, addresses: &[std::net::IpAddr]| {
+            cluster_definition(
+                "model",
+                endpoint,
+                InferenceProviderKind::Openai,
+                false,
+                addresses,
+            )
+        };
+        let profile = cluster(endpoint, &addresses).unwrap();
+        assert_eq!(profile.endpoints.len(), 1);
+        assert_eq!(profile.endpoints[0].host, "model.agents.svc.cluster.local");
+        assert_eq!(profile.endpoints[0].port, 8000);
+        assert_eq!(
+            profile.endpoints[0].allowed_ips,
+            ["10.96.0.42/32", "fd00::42/128"]
+        );
+        // Creation defers the grant until the provider observes the Service.
+        assert!(
+            cluster(endpoint, &[]).unwrap().endpoints[0]
+                .allowed_ips
+                .is_empty()
+        );
+        for rejected in [
+            "https://model.agents.svc.cluster.local:8000/v1",
+            "http://model.agents.svc:8000/v1",
+            "http://inference.example.com:8000/v1",
+            "http://model.agents.svc.cluster.local/v1",
+            "http://model.agents.svc.cluster.local:8000/v2",
+            "http://model.agents.svc.cluster.local:8000/v1/chat",
+            "http://user@model.agents.svc.cluster.local:8000/v1",
+            "http://user:secret@model.agents.svc.cluster.local:8000/v1",
+            "http://model.agents.svc.cluster.local:8000/v1?debug=1",
+            "http://model.agents.svc.cluster.local:8000/v1#fragment",
+        ] {
+            assert_eq!(
+                cluster(rejected, &addresses).err(),
+                Some(ObservationError::BindingMismatch),
+                "{rejected}"
+            );
+        }
+        for address in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "224.0.0.1",
+            "169.254.1.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "ff02::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+        ] {
+            let address: std::net::IpAddr = address.parse().unwrap();
+            assert!(!service_address_allowed(&address), "{address}");
+            assert_eq!(
+                cluster(endpoint, &[addresses[0], address]).err(),
+                Some(ObservationError::BindingMismatch),
+                "{address}"
+            );
+        }
+    }
+
+    #[test]
     fn inference_credentials_and_policy_are_bound_to_the_selected_endpoint() {
         let profile = definition(
             "local",
