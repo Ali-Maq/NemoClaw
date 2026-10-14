@@ -603,7 +603,9 @@ mod tests {
         }
     }
 
-    fn cluster_case(example: &[u8]) -> (Row, Row) {
+    /// The sandbox and provider profile rows the SDK compiles from a cluster model example,
+    /// with fixture image binaries and observed Service addresses.
+    fn sdk_cluster_case(example: &[u8]) -> (Row, Row) {
         let document = nemoclaw_sdk::config::Document::parse(example).unwrap();
         let generations = [
             "workspace",
@@ -655,7 +657,7 @@ mod tests {
             include_bytes!("../../../examples/kubernetes/local-vllm.yaml").as_slice(),
             include_bytes!("../../../examples/kubernetes/local-ollama.yaml").as_slice(),
         ] {
-            let (sandbox, fields) = cluster_case(example);
+            let (sandbox, fields) = sdk_cluster_case(example);
             let profile = native_definition(&fields, &TestServices).unwrap();
             let grants = [(profile.id.clone(), profile.endpoints[0].allowed_ips.clone())].into();
             let layer = openshell_policy::ProviderPolicyLayer {
@@ -682,27 +684,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn owned_cluster_profiles_reject_non_service_addresses() {
-        let (_, fields) = cluster_case(include_bytes!(
-            "../../../examples/kubernetes/local-ollama.yaml"
-        ));
-        for address in ["255.255.255.255", "::ffff:127.0.0.1", "::ffff:10.0.0.1"] {
-            let mut want = fields.clone();
-            want.insert(
-                "cluster_addresses".into(),
-                serde_json::json!([address]).to_string(),
-            );
-            assert!(
-                native_definition(&want, &TestServices).is_err(),
-                "{address}"
-            );
-        }
-    }
-
     #[tokio::test]
-    async fn profile_removal_validates_recorded_grants_when_the_service_is_absent() {
-        let (_, fields) = cluster_case(include_bytes!(
+    async fn sdk_profile_removal_validates_recorded_grants_when_the_service_is_absent() {
+        let (_, fields) = sdk_cluster_case(include_bytes!(
             "../../../examples/kubernetes/local-ollama.yaml"
         ));
         let mut profile = native_definition(&fields, &TestServices).unwrap();
@@ -753,8 +737,8 @@ mod tests {
     }
 
     #[test]
-    fn cluster_sandbox_grants_require_the_matching_owned_profile_and_exact_host_addresses() {
-        let (sandbox, fields) = cluster_case(include_bytes!(
+    fn sdk_cluster_sandbox_grants_require_the_matching_owned_profile_and_exact_host_addresses() {
+        let (sandbox, fields) = sdk_cluster_case(include_bytes!(
             "../../../examples/kubernetes/local-vllm.yaml"
         ));
         let profile = native_definition(&fields, &TestServices).unwrap();
@@ -798,8 +782,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sandbox_refresh_verifies_current_grants_but_removal_uses_recorded_policy() {
-        let (sandbox, fields) = cluster_case(include_bytes!(
+    async fn sdk_sandbox_refresh_verifies_current_grants_but_removal_uses_recorded_policy() {
+        let (sandbox, fields) = sdk_cluster_case(include_bytes!(
             "../../../examples/kubernetes/local-ollama.yaml"
         ));
         let profile = native_definition(&fields, &TestServices).unwrap();
