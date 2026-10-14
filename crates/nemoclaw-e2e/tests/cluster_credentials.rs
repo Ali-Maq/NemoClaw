@@ -70,6 +70,43 @@ impl Services for ClusterReads {
     }
 }
 
+/// A compiled row whose `gateway` ref names the fixture, which takes no credentials.
+fn at_fixture(row: &Row, endpoint: &str) -> Row {
+    let mut row = row.clone();
+    for (attribute, field) in nemoclaw_openshell::GATEWAY_FIELDS {
+        let value = if attribute == "endpoint" {
+            endpoint
+        } else {
+            ""
+        };
+        row.insert(field.into(), value.into());
+    }
+    row
+}
+
+/// OpenTofu attributes for a row, with each `ref` input as a literal object in
+/// place of the row fields it carries, or null when the row names nothing.
+fn typed_attributes(kind: &str, row: &Row) -> Value {
+    let mut attributes = serde_json::to_value(row).unwrap();
+    let object = attributes.as_object_mut().unwrap();
+    for reference in nemoclaw_openshell::references(kind) {
+        assert!(!reference.list, "{kind}: these tests write no list refs");
+        let mut value = json!({"type": reference.kind});
+        for (attribute, field) in &reference.fields {
+            value[*attribute] = object.remove(*field).unwrap_or_else(|| json!(""));
+        }
+        let named = reference
+            .fields
+            .iter()
+            .any(|(attribute, _)| value[*attribute] != "");
+        object.insert(
+            reference.attribute.into(),
+            if named { value } else { Value::Null },
+        );
+    }
+    attributes
+}
+
 #[tokio::test]
 async fn configured_gateway_routes_cluster_keys_to_registration_and_refreshes_only_the_reference() {
     let fixture = Fixture::start().await;
@@ -96,10 +133,7 @@ async fn configured_gateway_routes_cluster_keys_to_registration_and_refreshes_on
         .values;
     let services = Arc::new(ClusterReads::default());
     let client = Arc::new(GatewayClient::with_services(services.clone()));
-    let config = GatewayConfig {
-        endpoint: tf_provider::value::Value::Value(fixture.endpoint.clone()),
-        ..Default::default()
-    };
+    let config = GatewayConfig::default();
     let mut diagnostics = tf_provider::Diagnostics::default();
     assert_eq!(client.configure(&mut diagnostics, &config), Some(false));
     assert!(diagnostics.errors.is_empty());
@@ -107,7 +141,7 @@ async fn configured_gateway_routes_cluster_keys_to_registration_and_refreshes_on
     let mut saved = None;
     for kind in ["workspace", "provider_profile", "provider"] {
         let target = targets.iter().find(|t| t.kind == kind).unwrap();
-        let mut values = target.values.clone();
+        let mut values = at_fixture(&target.values, &fixture.endpoint);
         // The image data source normally supplies the profile's binary paths.
         if kind == "provider_profile" {
             values.insert("binaries_json".into(), r#"["/usr/bin/python3"]"#.into());
@@ -160,7 +194,7 @@ async fn configured_gateway_routes_cluster_keys_to_registration_and_refreshes_on
     assert!(diagnostics.errors.is_empty());
     let validations = services.validations.load(Ordering::SeqCst);
     let observed = backend
-        .read("provider", &saved, false)
+        .read("provider", &at_fixture(&saved, &fixture.endpoint), false)
         .await
         .unwrap()
         .unwrap();
@@ -206,17 +240,13 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
     let targets = nemoclaw_e2e::image_runtime::targets(&document, &generations).unwrap();
     let services = Arc::new(ClusterReads::default());
     let client = Arc::new(GatewayClient::with_services(services.clone()));
-    client
-        .connect(&nemoclaw_openshell::Connection {
-            endpoint: fixture.endpoint.clone(),
-            ..Default::default()
-        })
-        .unwrap();
     let backend = OpenShellBackend(client);
     let mut sandbox = None;
     for kind in ["workspace", "provider_profile", "provider", "sandbox"] {
         let target = targets.iter().find(|target| target.kind == kind).unwrap();
-        let created = backend.ensure(kind, &target.values).await;
+        let created = backend
+            .ensure(kind, &at_fixture(&target.values, &fixture.endpoint))
+            .await;
         assert!(created.error().is_none(), "{kind}: {:?}", created.error());
         if kind == "sandbox" {
             sandbox = created.into_parts().0;
@@ -224,7 +254,10 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
     }
     let sandbox = sandbox.unwrap();
     assert_eq!(
-        backend.read("sandbox", &sandbox, false).await.unwrap(),
+        backend
+            .read("sandbox", &at_fixture(&sandbox, &fixture.endpoint), false)
+            .await
+            .unwrap(),
         Some(sandbox.clone()),
         "the saved sandbox and its managed profile grants must be valid"
     );
@@ -232,8 +265,9 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
         .iter()
         .find(|target| target.kind == "agent_configuration")
         .unwrap();
-    let mut fields = target.values.clone();
+    let mut fields = at_fixture(&target.values, &fixture.endpoint);
     fields.insert("sandbox_id".into(), sandbox["id"].clone());
+    let config = typed_attributes(&target.kind, &fields);
 
     let (kind, name) = target.address.split_once('.').unwrap();
     fs::write(
@@ -243,13 +277,13 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
                 "source": compile::FABRIC_PROVIDER_ADDRESS,
                 "version": format!("= {version}"),
             }}},
-            "provider": {"fabric": {"endpoint": fixture.endpoint}},
-            "resource": {kind: {name: fields}},
+            "provider": {"fabric": {}},
+            "resource": {kind: {name: config}},
         })
         .to_string(),
     )
     .unwrap();
-    let mut attributes = serde_json::to_value(&fields).unwrap();
+    let mut attributes = config.clone();
     attributes["id"] = json!(sandbox["id"]);
     attributes["running"] = json!("true");
     let state_path = directory.path().join("terraform.tfstate");
@@ -259,7 +293,7 @@ async fn bundled_fabric_configuration_refresh_uses_managed_cluster_callbacks() {
         "resources": [{
             "mode": "managed", "type": kind, "name": name,
             "provider": format!("provider[\"{}\"]", compile::FABRIC_PROVIDER_ADDRESS),
-            "instances": [{"schema_version": 0, "attributes": attributes}],
+            "instances": [{"schema_version": 1, "attributes": attributes}],
         }],
     }))
     .unwrap();
@@ -357,7 +391,7 @@ async fn bundled_openshell_provider_refreshes_saved_cluster_credentials_without_
         .into_iter()
         .find(|target| target.kind == "provider")
         .unwrap();
-    let mut fields = target.values;
+    let mut fields = at_fixture(&target.values, &fixture.endpoint);
     fields.insert("profile_name".into(), String::new());
     let source = &fields["credential_source"];
     assert!(matches!(
@@ -410,14 +444,21 @@ async fn bundled_openshell_provider_refreshes_saved_cluster_credentials_without_
                 "source": compile::OPENSHELL_PROVIDER_ADDRESS,
                 "version": format!("= {version}"),
             }}},
-            "provider": {"openshell": {"endpoint": fixture.endpoint}},
-            "resource": {kind: {name: fields}},
+            "provider": {"openshell": {}},
+            "resource": {kind: {name: typed_attributes(&target.kind, &fields)}},
         })
         .to_string(),
     )
     .unwrap();
-    let mut attributes = serde_json::to_value(&fields).unwrap();
-    attributes["id"] = json!("saved-cluster-registration");
+    let mut saved = fields.clone();
+    saved.insert("id".into(), "saved-cluster-registration".into());
+    let mut attributes = typed_attributes(&target.kind, &saved);
+    let export = nemoclaw_openshell::export(&target.kind).unwrap();
+    let mut reference = json!({"type": export.kind});
+    for field in export.fields {
+        reference[field] = json!(saved[field]);
+    }
+    attributes["ref"] = reference;
     let state_path = directory.path().join("terraform.tfstate");
     let original = serde_json::to_vec(&json!({
         "version": 4, "terraform_version": compile::OPENTOFU_VERSION,
@@ -425,7 +466,7 @@ async fn bundled_openshell_provider_refreshes_saved_cluster_credentials_without_
         "resources": [{
             "mode": "managed", "type": kind, "name": name,
             "provider": format!("provider[\"{}\"]", compile::OPENSHELL_PROVIDER_ADDRESS),
-            "instances": [{"schema_version": 0, "attributes": attributes}],
+            "instances": [{"schema_version": 1, "attributes": attributes}],
         }],
     }))
     .unwrap();

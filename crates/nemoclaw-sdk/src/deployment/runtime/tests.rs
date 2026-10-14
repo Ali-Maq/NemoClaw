@@ -287,7 +287,8 @@ async fn plan_and_apply_refuse_cluster_port_changes_with_separate_state_files() 
         // bindings. Real OpenTofu decodes these through the packaged schemas.
         let native_state = |target: &Target| {
             let (kind, name) = target.address.split_once('.').unwrap();
-            let provider = if kind.starts_with("openshell_") {
+            let openshell = kind.starts_with("openshell_");
+            let provider = if openshell {
                 compile::OPENSHELL_PROVIDER_ADDRESS
             } else {
                 compile::PROVIDER_ADDRESS
@@ -308,13 +309,48 @@ async fn plan_and_apply_refuse_cluster_port_changes_with_separate_state_files() 
                 };
             }
             attributes["id"] = json!(format!("physical-{}", target.kind));
+            // OpenShell objects record the refs they take in place of the row
+            // fields those refs carry, and export their own.
+            for reference in nemoclaw_openshell::references(&target.kind) {
+                let object = attributes.as_object_mut().unwrap();
+                let mut carried = reference
+                    .fields
+                    .iter()
+                    .map(|(attribute, field)| (*attribute, object.remove(*field).unwrap()));
+                attributes[reference.attribute] = if reference.list {
+                    let (attribute, names) = carried.next().unwrap();
+                    let names: Vec<String> = serde_json::from_str(names.as_str().unwrap()).unwrap();
+                    names
+                        .into_iter()
+                        .map(|name| json!({"type": reference.kind, attribute: name}))
+                        .collect()
+                } else {
+                    let mut value = json!({"type": reference.kind});
+                    for (attribute, carried) in carried {
+                        value[attribute] = carried;
+                    }
+                    value
+                };
+            }
+            if let Some(export) = nemoclaw_openshell::export(&target.kind) {
+                let mut row = target.values.clone();
+                row.insert("id".into(), format!("physical-{}", target.kind));
+                let mut reference = json!({"type": export.kind});
+                for field in export.fields {
+                    reference[field] = json!(row[field]);
+                }
+                attributes[nemoclaw_tofu::REF] = reference;
+            }
             json!({
                 "version": 4, "terraform_version": compile::OPENTOFU_VERSION,
                 "serial": 1, "lineage": "cd73e09f-c75c-48ce-86af-352a4764560e", "outputs": {},
                 "resources": [{
                     "mode": "managed", "type": kind, "name": name,
                     "provider": format!("provider[\"{provider}\"]"),
-                    "instances": [{"schema_version": 0, "attributes": attributes}]
+                    "instances": [{
+                        "schema_version": if openshell { 1 } else { 0 },
+                        "attributes": attributes,
+                    }]
                 }]
             })
         };
