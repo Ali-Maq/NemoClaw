@@ -29,11 +29,11 @@ pub fn observation_message(error: ObservationError, sandbox: Option<&str>) -> St
     }
 }
 
-fn attribute<'a>(state: &'a State, name: &str) -> Option<&'a str> {
-    match state.get(name) {
-        Some(Value::Value(value)) => Some(value),
-        _ => None,
-    }
+/// The sandbox a resource's diagnostics name: the one it belongs to, else itself.
+fn sandbox_name(row: &Row) -> Option<&str> {
+    row.get("sandbox")
+        .or_else(|| row.get("name"))
+        .map(String::as_str)
 }
 
 fn known(state: &State) -> Row {
@@ -122,6 +122,28 @@ impl ResourceAdapter {
                 return None;
             }
         }
+        if let Some(check) = self.definition.validate_inputs {
+            let known: Row = self
+                .definition
+                .fields
+                .iter()
+                .filter_map(|field| match config.get(*field) {
+                    Some(Value::Value(value)) => Some(((*field).to_owned(), value.clone())),
+                    _ => None,
+                })
+                .collect();
+            let unknown: Vec<&str> = self
+                .definition
+                .fields
+                .iter()
+                .copied()
+                .filter(|field| matches!(config.get(*field), Some(Value::Unknown)))
+                .collect();
+            if let Err(requirement) = check(&known, &unknown) {
+                diags.root_error("Invalid configuration", requirement.into_owned());
+                return None;
+            }
+        }
         Some(())
     }
 
@@ -194,6 +216,29 @@ impl ResourceAdapter {
             })
             .collect()
     }
+    /// Set derived attributes from the inputs in `state`. While planning, one
+    /// whose inputs are unknown is unknown; after an observation, absent.
+    fn derive(&self, state: &mut State, planning: bool) {
+        if self.definition.derived.is_empty() {
+            return;
+        }
+        let row = known(state);
+        let unknown: Vec<&str> = self
+            .definition
+            .fields
+            .iter()
+            .copied()
+            .filter(|field| matches!(state.get(*field), Some(Value::Unknown)))
+            .collect();
+        for (name, derive) in &self.definition.derived {
+            let value = match derive(&row, &unknown) {
+                Some(value) => Value::Value(value),
+                None if planning => Value::Unknown,
+                None => Value::Null,
+            };
+            state.insert((*name).into(), value);
+        }
+    }
     /// Copy fields the backend uses without observing from `source`.
     fn carry(&self, source: &Row, mut observed: Row) -> Row {
         for field in &self.definition.carried {
@@ -213,6 +258,15 @@ impl ResourceAdapter {
             }
         }
         for field in self.definition.attributes() {
+            // Backends do not observe derived attributes; inputs determine them.
+            if self
+                .definition
+                .derived
+                .iter()
+                .any(|(name, _)| *name == field)
+            {
+                continue;
+            }
             if observed
                 .get(field)
                 .is_none_or(|value| value.is_empty() && !self.optional(field))
@@ -266,15 +320,16 @@ impl ResourceAdapter {
         if let Some(error) = error {
             diags.root_error(
                 "Apply incomplete",
-                self.message(
-                    observation_message(error, desired.get("name").map(String::as_str)),
-                    desired,
-                ),
+                self.message(observation_message(error, sandbox_name(desired)), desired),
             );
         }
         match state {
             Some(row) => match self.checked(desired, row) {
-                Ok(row) => Some(row.into_iter().map(|(k, v)| (k, Value::Value(v))).collect()),
+                Ok(row) => {
+                    let mut state = row.into_iter().map(|(k, v)| (k, Value::Value(v))).collect();
+                    self.derive(&mut state, false);
+                    Some(state)
+                }
                 Err(error) => {
                     diags.root_error("Apply incomplete", error.to_string());
                     prior
@@ -349,15 +404,16 @@ impl Resource for ResourceAdapter {
         };
         match observation {
             Ok(None) => None,
-            Ok(Some(row)) => Some((
-                row.into_iter().map(|(k, v)| (k, Value::Value(v))).collect(),
-                private,
-            )),
+            Ok(Some(row)) => {
+                let mut state = row.into_iter().map(|(k, v)| (k, Value::Value(v))).collect();
+                self.derive(&mut state, false);
+                Some((state, private))
+            }
             Err(error) => {
-                let name = attribute(&state, "name");
+                let known = known(&state);
                 diags.root_error(
                     "Resource observation",
-                    self.message(observation_message(error, name), &known(&state)),
+                    self.message(observation_message(error, sandbox_name(&known)), &known),
                 );
                 Some((state, private))
             }
@@ -390,6 +446,7 @@ impl Resource for ResourceAdapter {
                 proposed.insert((*name).into(), Value::Unknown);
             }
         }
+        self.derive(&mut proposed, true);
         self.check_plan(diags, &proposed, &config, None).await?;
         Some((proposed, Value::Null))
     }
@@ -412,6 +469,7 @@ impl Resource for ResourceAdapter {
         self.check_plan(diags, &proposed, &config, Some(&prior))
             .await?;
         let (mut state, replacements) = plan_update(&self.definition, &prior, proposed);
+        self.derive(&mut state, true);
         if self.destroying.load(Ordering::Acquire)
             && self.definition.keep_running_during_destroy
             && let Some(running) = prior.get("running")
@@ -621,6 +679,152 @@ mod tests {
             .unwrap();
         assert!(diags.errors.is_empty(), "{diags:?}");
         assert_eq!(created, state);
+    }
+
+    /// Inputs that constrain each other are checked together while planning,
+    /// even while others are unknown; the check learns which ones are.
+    #[test]
+    fn related_inputs_are_validated_together() {
+        fn check(known: &Row, unknown: &[&str]) -> Result<(), std::borrow::Cow<'static, str>> {
+            if unknown.contains(&"limit") {
+                return Ok(());
+            }
+            let number = |field: &str| known[field].parse::<u32>().unwrap();
+            if number("count") > number("limit") {
+                return Err("count exceeds limit".into());
+            }
+            Ok(())
+        }
+        let definition =
+            Definition::new("pool", &["count", "limit", "other"], &[]).validate_inputs(check);
+        let adapter = ResourceAdapter::new(definition, Arc::new(UnusedBackend));
+        let config = |limit: Value<String>| -> State {
+            [
+                ("count", Value::Value("3".into())),
+                ("limit", limit),
+                ("other", Value::Unknown),
+            ]
+            .map(|(key, value)| (key.into(), value))
+            .into()
+        };
+        let mut diags = Diagnostics::default();
+        assert!(
+            adapter
+                .validate_config(&mut diags, &config(Value::Value("5".into())))
+                .is_some()
+        );
+        assert!(
+            adapter
+                .validate_config(&mut diags, &config(Value::Unknown))
+                .is_some()
+        );
+        assert!(diags.errors.is_empty(), "{diags:?}");
+        assert!(
+            adapter
+                .validate_config(&mut diags, &config(Value::Value("2".into())))
+                .is_none()
+        );
+        assert!(
+            format!("{diags:?}").contains("count exceeds limit"),
+            "{diags:?}"
+        );
+    }
+
+    /// A derived attribute is a function of inputs: known while planning once
+    /// those inputs are, and recomputed from every observation.
+    #[tokio::test]
+    async fn derived_attributes_follow_their_inputs() {
+        fn total(known: &Row, unknown: &[&str]) -> Option<String> {
+            if unknown.iter().any(|field| ["a", "b"].contains(field)) {
+                return None;
+            }
+            let number = |field: &str| known[field].parse::<u32>().unwrap();
+            Some((number("a") + number("b")).to_string())
+        }
+        let observed: Row = [("id", "pool/1"), ("a", "2"), ("b", "5"), ("other", "")]
+            .map(|(key, value)| (key.into(), value.into()))
+            .into();
+        let definition = Definition::new("pool", &["a", "b", "other"], &["a", "b", "other"])
+            .optional(&["other"])
+            .derived("total", total);
+        let adapter = ResourceAdapter::new(definition, Arc::new(Observer(observed)));
+        let state = |pairs: &[(&str, Value<String>)]| -> State {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).into(), value.clone()))
+                .collect()
+        };
+        let known = |value: &str| Value::Value(value.to_owned());
+        let mut diags = Diagnostics::default();
+        let config = state(&[
+            ("a", known("1")),
+            ("b", known("2")),
+            ("other", Value::Unknown),
+        ]);
+        let (planned, _) = adapter
+            .plan_create(&mut diags, config.clone(), config, ValueEmpty::default())
+            .await
+            .unwrap();
+        assert_eq!(planned["total"], known("3"));
+        let config = state(&[
+            ("a", known("1")),
+            ("b", Value::Unknown),
+            ("other", known("")),
+        ]);
+        let (planned, _) = adapter
+            .plan_create(&mut diags, config.clone(), config, ValueEmpty::default())
+            .await
+            .unwrap();
+        assert_eq!(planned["total"], Value::Unknown);
+        let prior = state(&[
+            ("id", known("pool/1")),
+            ("a", known("1")),
+            ("b", known("2")),
+            ("other", known("")),
+            ("total", known("3")),
+        ]);
+        let proposed = state(&[
+            ("id", known("pool/1")),
+            ("a", known("4")),
+            ("b", known("2")),
+            ("other", known("")),
+            ("total", known("3")),
+        ]);
+        let (planned, _, _) = adapter
+            .plan_update(
+                &mut diags,
+                prior.clone(),
+                proposed.clone(),
+                proposed,
+                ValueEmpty::default(),
+                ValueEmpty::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(planned["total"], known("6"));
+        let (refreshed, _) = adapter
+            .read(
+                &mut diags,
+                prior,
+                ValueEmpty::default(),
+                ValueEmpty::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refreshed["total"], known("7"));
+        assert!(diags.errors.is_empty(), "{diags:?}");
+    }
+
+    /// A resource in a sandbox, such as a Fabric agent, names that sandbox in
+    /// diagnostics; a sandbox names itself.
+    #[test]
+    fn diagnostics_name_the_sandbox_a_resource_belongs_to() {
+        let agent: Row = [("name", "main"), ("sandbox", "coder")]
+            .map(|(key, value)| (key.into(), value.into()))
+            .into();
+        assert_eq!(sandbox_name(&agent), Some("coder"));
+        let sandbox: Row = [("name".to_owned(), "coder".to_owned())].into();
+        assert_eq!(sandbox_name(&sandbox), Some("coder"));
     }
 
     #[test]

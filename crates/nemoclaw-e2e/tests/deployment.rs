@@ -715,11 +715,7 @@ impl Lifecycle {
             .await
             .unwrap();
         assert_eq!(plan.changes.len(), 1);
-        assert!(
-            plan.changes[0]
-                .resource
-                .starts_with("fabric_agent_configuration.")
-        );
+        assert!(plan.changes[0].resource.starts_with("fabric_agent."));
         assert_eq!(plan.changes[0].actions, ["update"]);
         self.fixture.state.lock().unwrap().exec_exit = 2;
         assert!(
@@ -807,7 +803,7 @@ impl Lifecycle {
         assert!(
             plan.changes
                 .iter()
-                .any(|change| change.resource.starts_with("fabric_agent_configuration."))
+                .any(|change| change.resource.starts_with("fabric_agent."))
         );
         assert_eq!(self.fixture.state.lock().unwrap().effects, effects);
         self.fixture
@@ -891,17 +887,17 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
     }
     let recovery = deployment.apply(&document, &cancel).await.unwrap();
     assert_eq!(recovery.changes.len(), 1);
-    assert!(recovery.changes[0].resource.contains("agent_configuration"));
+    assert!(recovery.changes[0].resource.contains("agent"));
     let recovered = fs::read(&state_path).unwrap();
     let observed: serde_json::Value = serde_json::from_slice(&recovered).unwrap();
     let mut existing_resources = observed.clone();
     let resources = existing_resources["resources"].as_array_mut().unwrap();
     let configuration_count = resources
         .iter()
-        .filter(|resource| resource["type"] == "fabric_agent_configuration")
+        .filter(|resource| resource["type"] == "fabric_agent")
         .count();
     assert_eq!(configuration_count, 1);
-    resources.retain(|resource| resource["type"] != "fabric_agent_configuration");
+    resources.retain(|resource| resource["type"] != "fabric_agent");
     assert_same_managed_resources(
         &serde_json::to_vec(&existing_resources).unwrap(),
         &established,
@@ -910,7 +906,7 @@ async fn readiness_and_observation_failures_retain_bindings_and_recover_without_
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_agent_readiness")
         .unwrap();
     assert_eq!(readiness["instances"][0]["attributes"]["ready"], true);
     assert!(readiness["instances"][0]["attributes"]["error_message"].is_null());
@@ -1214,7 +1210,7 @@ async fn apply_health_failure_retains_resources_and_unchanged_apply_checks_again
         .as_array()
         .unwrap()
         .iter()
-        .find(|resource| resource["type"] == "fabric_sandbox_readiness")
+        .find(|resource| resource["type"] == "fabric_agent_readiness")
         .unwrap();
     let observation = &readiness["instances"][0]["attributes"];
     assert_eq!(observation["ready"], false);
@@ -1295,7 +1291,7 @@ async fn mixed_sandboxes_reorder_add_recover_export_and_destroy_independently() 
         added
             .changes
             .iter()
-            .any(|change| change.resource == "fabric_agent_configuration.third")
+            .any(|change| change.resource == "fabric_agent.third")
     );
     fixture.state.lock().unwrap().sandbox_phase = Some(openshell_core::proto::SandboxPhase::Error);
     assert!(deployment.apply(&document, &cancel).await.is_err());
@@ -2066,7 +2062,7 @@ async fn scoped_provider_labels_and_stopped_runtime_plans_preserve_authored_iden
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|resource| resource["address"] == "fabric_agent_configuration.assistant")
+                .find(|resource| resource["address"] == "fabric_agent.assistant")
                 .unwrap();
             assert_eq!(resource["agentRunning"], false);
             assert_eq!(resource["plannedActions"], serde_json::json!(["update"]));

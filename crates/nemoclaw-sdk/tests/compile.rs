@@ -36,7 +36,7 @@ fn gateway_capabilities_gate_deployment_and_follow_bootstrap_reconciliation() {
         bootstrap["data"]["openshell_gateway"]["current"]["depends_on"],
         serde_json::json!([
             "docker_container.managed_gateway_runtime",
-            "data.nemoclaw_gateway_readiness.current"
+            "data.openshell_docker_gateway_readiness.current"
         ]),
         "bootstrap must reconcile its gateway and wait for its process before observing capabilities"
     );
@@ -239,8 +239,8 @@ fn compiled_resources_preserve_ownership_connections_and_dependency_order() {
         provider,
         profile,
         sandbox,
-        &resources["fabric_agent_configuration"]["worker"],
-        &graph["data"]["fabric_sandbox_readiness"]["worker"],
+        &resources["fabric_agent"]["worker"],
+        &graph["data"]["fabric_agent_readiness"]["worker"],
     ] {
         assert_eq!(
             resource["gateway"], "${data.openshell_gateway.current.ref}",
@@ -296,17 +296,34 @@ fn managed_plans_query_selected_engine_and_image_without_probe_resources() {
         compile(&document, &generations, "0.1.0").unwrap(),
         nemoclaw_sdk::compile::compile_runtime(&document, &generations, "0.1.0").unwrap(),
     ] {
+        // The engine's facts and the gateway's prerequisites are separate
+        // reads: the facts serve every reader, and the openshell provider
+        // judges whether the engine can host its gateway.
+        let selected = &document.spec.gateway.as_managed().unwrap().engine;
         let engine = &graph["data"]["nemoclaw_engine_capabilities"]["current"];
-        assert_eq!(
-            engine["engine"],
-            document.spec.gateway.as_managed().unwrap().engine
-        );
-        assert_eq!(engine["compute_driver"], "docker");
+        assert_eq!(engine["engine"], *selected);
+        assert!(engine.get("compute_driver").is_none());
+        assert!(engine.get("lifecycle").is_none());
+        let prerequisites = &graph["data"]["openshell_gateway_prerequisites"]["current"];
+        assert_eq!(prerequisites["engine"], *selected);
+        assert_eq!(prerequisites["compute_driver"], "docker");
         assert!(
-            engine.get("depends_on").is_none(),
-            "read existing capabilities during plan"
+            prerequisites["lifecycle"]["postcondition"][0]["error_message"]
+                .as_str()
+                .unwrap()
+                .contains("does not meet gateway prerequisites")
         );
-        let image = &graph["data"]["fabric_capabilities"]["sandbox_0"];
+        for read in [engine, prerequisites] {
+            assert!(
+                read.get("depends_on").is_none(),
+                "read existing capabilities during plan"
+            );
+        }
+        assert_eq!(
+            graph["output"]["discovery"]["value"]["gateway_prerequisites"],
+            "${data.openshell_gateway_prerequisites.current.observation_json}"
+        );
+        let image = &graph["data"]["fabric_harnesses"]["sandbox_0"];
         assert_eq!(image["image"], document.spec.sandboxes[0].image.ref_);
         assert!(
             image.get("depends_on").is_none(),
@@ -351,12 +368,12 @@ fn arbitrary_fabric_harness_identifier_survives_runtime_compilation() {
         .find(|target| target.kind == "sandbox")
         .unwrap();
     assert!(!sandbox.values.contains_key("agent_runtime"));
-    let settings: serde_json::Value = serde_json::from_str(
+    let settings: serde_json::Value = nemoclaw_fabric::agent::compose(
         &targets
             .iter()
-            .find(|target| target.kind == "agent_configuration")
+            .find(|target| target.kind == "agent")
             .unwrap()
-            .values["config_json"],
+            .values,
     )
     .unwrap();
     assert!(settings.to_string().contains("openai-responses"));
@@ -368,7 +385,7 @@ fn arbitrary_fabric_harness_identifier_survives_runtime_compilation() {
     // The sandbox launches what Fabric computed; it holds no agent runtime of its own.
     assert_eq!(
         graph["resource"]["openshell_sandbox"]["assistant"]["launch_json"],
-        "${data.fabric_capabilities.sandbox_0.launch_json}"
+        "${data.fabric_harnesses.sandbox_0.launch_json}"
     );
     assert!(
         graph["resource"]["openshell_sandbox"]["assistant"]
@@ -416,7 +433,7 @@ fn adding_an_image_keeps_existing_registration_and_separates_executable_scopes()
             graph["resource"]["openshell_sandbox"][name]["launch_json"]
                 .as_str()
                 .unwrap()
-                .contains("fabric_capabilities")
+                .contains("fabric_harnesses")
         );
     }
     for profile in graph["resource"]["openshell_provider_profile"]
@@ -425,7 +442,7 @@ fn adding_an_image_keeps_existing_registration_and_separates_executable_scopes()
         .values()
     {
         let binaries = profile["binaries"].as_str().unwrap();
-        assert!(binaries.starts_with("${jsondecode(data.fabric_capabilities."));
+        assert!(binaries.starts_with("${jsondecode(data.fabric_harnesses."));
         assert!(binaries.ends_with(".binaries_json)}"));
     }
 }

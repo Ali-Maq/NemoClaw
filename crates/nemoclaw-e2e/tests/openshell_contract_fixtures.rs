@@ -46,19 +46,24 @@ fn fixture(mut document: Document) -> Option<String> {
         encoded = encoded
             .replace(
                 &format!(
-                    "\"${{jsondecode(data.fabric_capabilities.sandbox_{index}.binaries_json)}}\""
+                    "\"${{jsondecode(data.fabric_harnesses.sandbox_{index}.binaries_json)}}\""
                 ),
                 &serde_json::to_string(&binding.binaries()).unwrap(),
             )
             .replace(
-                &format!("\"${{data.fabric_capabilities.sandbox_{index}.launch_json}}\""),
+                &format!("\"${{data.fabric_harnesses.sandbox_{index}.launch_json}}\""),
                 &launch.replace("${", "$${"),
             );
     }
     let mut resources = Map::new();
     let compiled: Value = serde_json::from_str(&encoded).unwrap();
     for (kind, bodies) in compiled.as_object().unwrap() {
-        if !kind.starts_with("openshell_") {
+        // OpenShell objects; the gateway installation types have their own
+        // contract tests.
+        if !kind.starts_with("openshell_")
+            || nemoclaw_openshell::installation_type(nemoclaw_openshell::object_kind(kind))
+                .is_some()
+        {
             continue;
         }
         let mut bodies = bodies.clone();
@@ -71,7 +76,16 @@ fn fixture(mut document: Document) -> Option<String> {
             if let Some(depends) = body.get_mut("depends_on").and_then(Value::as_array_mut) {
                 depends.retain(|address| {
                     address.as_str().is_some_and(|address| {
-                        address.starts_with("openshell_") || address.starts_with("data.openshell_")
+                        let kind = address
+                            .trim_start_matches("data.")
+                            .split('.')
+                            .next()
+                            .unwrap_or_default();
+                        kind.starts_with("openshell_")
+                            && nemoclaw_openshell::installation_type(
+                                nemoclaw_openshell::object_kind(kind),
+                            )
+                            .is_none()
                     })
                 });
                 if depends.is_empty() {

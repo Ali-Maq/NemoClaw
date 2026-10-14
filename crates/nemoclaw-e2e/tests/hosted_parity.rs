@@ -260,7 +260,7 @@ mod live {
             ),
             deferred: vec!["OpenShell registration and sandbox require the managed gateway".into()],
             deferred_resources: vec![
-                "fabric_agent_configuration.assistant".into(),
+                "fabric_agent.assistant".into(),
                 "openshell_provider_registration.inference_hosted-nvidia-prod".into(),
                 "openshell_provider_profile.inference_hosted-nvidia-prod".into(),
                 "openshell_sandbox.assistant".into(),
@@ -277,7 +277,7 @@ mod live {
     fn removed_resources(document: &Document) -> Vec<Change> {
         let mut removed = changes(
             &[
-                "fabric_agent_configuration.assistant",
+                "fabric_agent.assistant",
                 "openshell_provider_registration.inference_hosted-nvidia-prod",
                 "openshell_provider_profile.inference_hosted-nvidia-prod",
                 "openshell_sandbox.assistant",
@@ -288,7 +288,7 @@ mod live {
         removed.extend(changes(
             &runtime
                 .iter()
-                .filter(|address| address.as_str() != "nemoclaw_gateway_storage.runtime")
+                .filter(|address| address.as_str() != "openshell_gateway_storage.runtime")
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             "delete",
@@ -299,7 +299,7 @@ mod live {
     fn retained_resources() -> Vec<String> {
         vec![
             "openshell_workspace.deployment".into(),
-            "nemoclaw_gateway_storage.runtime".into(),
+            "openshell_gateway_storage.runtime".into(),
         ]
     }
 
@@ -330,7 +330,7 @@ mod live {
         );
         expected.extend(changes(
             &[
-                "fabric_agent_configuration.assistant",
+                "fabric_agent.assistant",
                 "openshell_provider_registration.inference_hosted-nvidia-prod",
                 "openshell_provider_profile.inference_hosted-nvidia-prod",
                 "openshell_sandbox.assistant",
@@ -437,7 +437,7 @@ mod live {
         let mut expected = runtime_resources(&document);
         expected.extend(
             [
-                "fabric_agent_configuration.assistant",
+                "fabric_agent.assistant",
                 "openshell_provider_registration.inference_hosted-nvidia-prod",
                 "openshell_provider_profile.inference_hosted-nvidia-prod",
                 "openshell_sandbox.assistant",
