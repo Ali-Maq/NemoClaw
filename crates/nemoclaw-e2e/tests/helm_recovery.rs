@@ -10,8 +10,8 @@
 //! `test-scenarios` setup builds, with the fixture release either imported by
 //! the Helm provider or left as a release record that OpenTofu does not bind.
 //! The tests in this file check a lost Helm binding; the child modules check a
-//! deleted or truncated receipt, a release record with no binding, and a
-//! second destroy, a 401, or a cancellation.
+//! deleted or truncated receipt, a release record with no binding, a 401, or a
+//! cancellation.
 
 use super::kube_api;
 use super::transport;
@@ -268,22 +268,6 @@ fn durable_files(stage: &Path) -> BTreeSet<String> {
     recovery_files(stage, &BTreeSet::new())
         .into_iter()
         .collect()
-}
-
-/// The progress events a deployment has reported.
-#[derive(Clone, Default)]
-struct Events(Arc<Mutex<Vec<Progress>>>);
-
-impl Events {
-    /// A progress callback that records into these events.
-    fn recording(&self) -> Arc<dyn Fn(Progress) + Send + Sync> {
-        let events = self.0.clone();
-        Arc::new(move |event| events.lock().unwrap().push(event))
-    }
-
-    fn all(&self) -> Vec<Progress> {
-        self.0.lock().unwrap().clone()
-    }
 }
 
 /// `error` is a failed OpenTofu `operation` whose diagnostic contains every
