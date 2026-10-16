@@ -126,7 +126,7 @@ if [ "$verify_cron" = 0 ]; then
   echo "ISSUE_5324_ADMIN_APPROVAL_OK"
   exit
 fi
-if ! run_with_bounded_output "$cron_output" openclaw cron add --name "$cron_name" --every 2h --agent main --session isolated --message "hello"; then
+if ! run_with_bounded_output "$cron_output" openclaw cron add --name "$cron_name" --every 2h --agent main --session isolated --message "hello" --no-deliver; then
   echo "ADMIN_CRON_RETRY_FAILED" >&2
   emit_admin_diagnostic "$cron_output"
   exit 28

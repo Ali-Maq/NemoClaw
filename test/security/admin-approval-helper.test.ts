@@ -529,7 +529,7 @@ describe("prepared connect-shell administrative approval", () => {
     expect(commands).toEqual([
       "devices list --json",
       `devices approve ${EXPECTED_REQUEST_ID}`,
-      "cron add --name admin-cron --every 2h --agent main --session isolated --message hello",
+      "cron add --name admin-cron --every 2h --agent main --session isolated --message hello --no-deliver",
       "cron run cron-1 --wait --wait-timeout 2m --timeout 10000",
     ]);
   });
