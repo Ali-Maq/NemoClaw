@@ -219,7 +219,7 @@ fn bound(target: &Target) -> Value {
     values["id"] = if target.address == HELM_RELEASE {
         values["name"].clone()
     } else {
-        json!(format!("physical-{}", target.kind))
+        json!(format!("physical-{}", target.address))
     };
     values
 }
