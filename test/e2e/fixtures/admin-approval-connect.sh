@@ -157,12 +157,13 @@ cron_id="$(cat "$cron_id_file")"
   exit 28
 }
 echo "ISSUE_5324_STAGE=cron-run"
-if ! run_with_bounded_output "$cron_run_output" openclaw cron run "$cron_id"; then
+# Keep the completion wait inside the caller's four-minute approval budget.
+if ! run_with_bounded_output "$cron_run_output" openclaw cron run "$cron_id" --wait --wait-timeout 2m --timeout 10000; then
   echo "ADMIN_CRON_RUN_FAILED" >&2
   emit_admin_diagnostic "$cron_run_output"
   exit 29
 fi
-if ! python3 - "$cron_run_output" <<'PY_CRON_RUN'; then
+if ! python3 - "$cron_run_output" "$cron_id" <<'PY_CRON_RUN'; then
 import json, sys
 from pathlib import Path
 raw=Path(sys.argv[1]).read_text(encoding='utf-8')
@@ -172,9 +173,17 @@ for index, char in enumerate(raw):
     try: value,_=decoder.raw_decode(raw[index:])
     except Exception: continue
     if not isinstance(value, dict) or value.get('ok') is not True: continue
-    if value.get('ran') is True: raise SystemExit(0)
-    if value.get('enqueued') is True and str(value.get('runId') or '').strip(): raise SystemExit(0)
-raise SystemExit('cron run did not report a successful run or enqueue')
+    run_id=value.get('runId')
+    run=value.get('run')
+    if not isinstance(run_id, str) or not run_id.strip() or not isinstance(run, dict): continue
+    if (
+        value.get('completed') is True
+        and value.get('status') == 'ok'
+        and value.get('completionStatus') == 'succeeded'
+        and run.get('jobId') == sys.argv[2]
+        and run.get('runId') == run_id
+    ): raise SystemExit(0)
+raise SystemExit('cron run did not report successful completion for its job and run')
 PY_CRON_RUN
   echo "ADMIN_CRON_RUN_RESULT_INVALID" >&2
   exit 30

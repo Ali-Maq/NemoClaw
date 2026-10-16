@@ -22,6 +22,22 @@ import {
   preApprovalAdminProbeEvidence,
 } from "../e2e/fixtures/issue-4462-admin-approval-evidence.ts";
 
+const COMPLETED_CRON_RUN = {
+  ok: true,
+  enqueued: true,
+  runId: "run-1",
+  completed: true,
+  status: "ok",
+  completionStatus: "succeeded",
+  run: {
+    jobId: "cron-1",
+    runId: "run-1",
+    action: "finished",
+    status: "ok",
+    completionStatus: "succeeded",
+  },
+};
+
 const EXPECTED_REQUEST_ID = "12345678-1234-4123-8123-123456789abc";
 const VERSION_ONE_REQUEST_ID = "12345678-1234-1123-8123-123456789abc";
 const EXPECTED_OPENSHELL_ARGS = [
@@ -150,6 +166,7 @@ function runAdminApprovalScript(
   options: {
     expectedRequestId?: string;
     verifyCronConsumer?: boolean;
+    cronRunOutput?: string;
     terminal?: boolean;
     cleanupFails?: boolean;
     tamperScript?: boolean;
@@ -242,7 +259,7 @@ case "$1:$2" in
   devices:list) cat "$FAKE_DEVICES_STATE" ;;
   devices:approve) ;;
   cron:add) printf '%s\\n' '{"id":"cron-1","name":"admin-cron"}' ;;
-  cron:run) printf '%s\\n' '{"ok":true,"ran":true}' ;;
+  cron:run) printf '%s\\n' "$FAKE_CRON_RUN_OUTPUT" ;;
   *) exit 90 ;;
 esac
 `,
@@ -261,6 +278,7 @@ esac
     FAKE_DEVICES_STATE: devicesPath,
     FAKE_OPENCLAW_FAIL: failureCommand ?? "",
     FAKE_OPENCLAW_LOG: commandLogPath,
+    FAKE_CRON_RUN_OUTPUT: options.cronRunOutput ?? JSON.stringify(COMPLETED_CRON_RUN),
     FAKE_OPENSHELL_ARGV_LOG: openshellArgvLogPath,
     FAKE_FAILURE_OUTPUT_PADDING_BYTES: String(failureOutputPaddingBytes),
     FAKE_MKTEMP_COUNTER: mktempCounterPath,
@@ -512,8 +530,56 @@ describe("prepared connect-shell administrative approval", () => {
       "devices list --json",
       `devices approve ${EXPECTED_REQUEST_ID}`,
       "cron add --name admin-cron --every 2h --agent main --session isolated --message hello",
-      "cron run cron-1",
+      "cron run cron-1 --wait --wait-timeout 2m --timeout 10000",
     ]);
+  });
+
+  it.each([
+    ["enqueue only", { ok: true, enqueued: true, runId: "run-1" }],
+    ["legacy run acknowledgement", { ok: true, ran: true }],
+    ["unfinished run", { ...COMPLETED_CRON_RUN, completed: false }],
+    ["missing run identity", { ...COMPLETED_CRON_RUN, runId: undefined }],
+    ["wrong job", { ...COMPLETED_CRON_RUN, run: { ...COMPLETED_CRON_RUN.run, jobId: "other" } }],
+    ["wrong run", { ...COMPLETED_CRON_RUN, run: { ...COMPLETED_CRON_RUN.run, runId: "other" } }],
+    ["failed completion", { ...COMPLETED_CRON_RUN, completionStatus: "failed" }],
+    ["skipped run", { ...COMPLETED_CRON_RUN, status: "skipped" }],
+    ["missing completion record", { ...COMPLETED_CRON_RUN, run: null }],
+  ])("rejects %s before reporting approval success (#13342)", (_case, response) => {
+    const { commands, result, stagedScriptRetained } = runAdminApprovalScript(
+      undefined,
+      0,
+      EXPECTED_REQUEST_ID,
+      { cronRunOutput: JSON.stringify(response) },
+    );
+    expect(result.status).toBe(30);
+    expect(result.stderr).toContain("ADMIN_CRON_RUN_RESULT_INVALID");
+    expect(result.stdout).not.toContain("ISSUE_5324_ADMIN_APPROVAL_OK");
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/cron-1|run-1|test-gateway-token/);
+    expect(commands.filter((command) => command.startsWith("cron run "))).toHaveLength(1);
+    expect(stagedScriptRetained).toBe(false);
+  });
+
+  it("accepts completed cron output after a CLI banner (#13342)", () => {
+    const { result } = runAdminApprovalScript(undefined, 0, EXPECTED_REQUEST_ID, {
+      cronRunOutput: `OpenClaw ready\n${JSON.stringify(COMPLETED_CRON_RUN)}`,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("ISSUE_5324_ADMIN_APPROVAL_OK");
+  });
+
+  it("rejects malformed cron output and removes its staged script (#13342)", () => {
+    const { result, stagedScriptRetained } = runAdminApprovalScript(
+      undefined,
+      0,
+      EXPECTED_REQUEST_ID,
+      {
+        cronRunOutput: "invalid response token=test-gateway-token",
+      },
+    );
+    expect(result.status).toBe(30);
+    expect(result.stderr).toContain("ADMIN_CRON_RUN_RESULT_INVALID");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("test-gateway-token");
+    expect(stagedScriptRetained).toBe(false);
   });
 
   it.each([
