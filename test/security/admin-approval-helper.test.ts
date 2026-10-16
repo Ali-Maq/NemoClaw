@@ -38,6 +38,13 @@ const COMPLETED_CRON_RUN = {
   },
 };
 
+const FAILED_CRON_RUN = {
+  ...COMPLETED_CRON_RUN,
+  status: "error",
+  completionStatus: "failed",
+  run: { ...COMPLETED_CRON_RUN.run, status: "error", completionStatus: "failed" },
+};
+
 const EXPECTED_REQUEST_ID = "12345678-1234-4123-8123-123456789abc";
 const VERSION_ONE_REQUEST_ID = "12345678-1234-1123-8123-123456789abc";
 const EXPECTED_OPENSHELL_ARGS = [
@@ -168,6 +175,7 @@ function runAdminApprovalScript(
     verifyCronConsumer?: boolean;
     cronRunOutput?: string;
     cronRunError?: string;
+    cronRunExitCode?: number;
     terminal?: boolean;
     cleanupFails?: boolean;
     tamperScript?: boolean;
@@ -260,7 +268,7 @@ case "$1:$2" in
   devices:list) cat "$FAKE_DEVICES_STATE" ;;
   devices:approve) ;;
   cron:add) printf '%s\\n' '{"id":"cron-1","name":"admin-cron"}' ;;
-  cron:run) printf '%s\\n' "$FAKE_CRON_RUN_OUTPUT" ;;
+  cron:run) printf '%s\\n' "$FAKE_CRON_RUN_OUTPUT"; exit "$FAKE_CRON_RUN_EXIT_CODE" ;;
   *) exit 90 ;;
 esac
 `,
@@ -281,6 +289,7 @@ esac
     FAKE_OPENCLAW_LOG: commandLogPath,
     FAKE_CRON_RUN_OUTPUT: options.cronRunOutput ?? JSON.stringify(COMPLETED_CRON_RUN),
     FAKE_CRON_RUN_ERROR: options.cronRunError ?? "request timed out cron=cron-1",
+    FAKE_CRON_RUN_EXIT_CODE: String(options.cronRunExitCode ?? 0),
     FAKE_OPENSHELL_ARGV_LOG: openshellArgvLogPath,
     FAKE_FAILURE_OUTPUT_PADDING_BYTES: String(failureOutputPaddingBytes),
     FAKE_MKTEMP_COUNTER: mktempCounterPath,
@@ -569,6 +578,54 @@ describe("prepared connect-shell administrative approval", () => {
     expect(stagedScriptRetained).toBe(false);
   });
 
+  it.each([
+    ["wrong job", { ...FAILED_CRON_RUN, run: { ...FAILED_CRON_RUN.run, jobId: "other" } }],
+    ["wrong run", { ...FAILED_CRON_RUN, run: { ...FAILED_CRON_RUN.run, runId: "other" } }],
+    ["nonterminal", { ...FAILED_CRON_RUN, completed: false }],
+    ["contradictory status", { ...FAILED_CRON_RUN, run: { ...FAILED_CRON_RUN.run, status: "ok" } }],
+    [
+      "contradictory completion",
+      { ...FAILED_CRON_RUN, run: { ...FAILED_CRON_RUN.run, completionStatus: "succeeded" } },
+    ],
+    [
+      "unrecognized terminal value",
+      {
+        ...FAILED_CRON_RUN,
+        completionStatus: "private-sentinel",
+        run: { ...FAILED_CRON_RUN.run, completionStatus: "private-sentinel" },
+      },
+    ],
+    ["non-string terminal value", { ...FAILED_CRON_RUN, status: ["error"] }],
+  ])("does not attribute %s output to a terminal cron failure", (_case, response) => {
+    const { result, stagedScriptRetained } = runAdminApprovalScript(
+      undefined,
+      0,
+      EXPECTED_REQUEST_ID,
+      { cronRunOutput: JSON.stringify(response), cronRunExitCode: 1 },
+    );
+    expect(result.status).toBe(29);
+    expect(result.stderr).toContain("ADMIN_DIAGNOSTIC=command-failed");
+    expect(result.stdout).not.toContain("ISSUE_5324_ADMIN_APPROVAL_OK");
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/cron-1|run-1|other|private-sentinel/);
+    expect(stagedScriptRetained).toBe(false);
+  });
+
+  it.each([
+    ["malformed", '{"private-sentinel":'],
+    ["deeply nested", `{"private-sentinel":${"[".repeat(2000)}0${"]".repeat(2000)}}`],
+  ])("preserves a %s cron command failure without raw output", (_case, cronRunOutput) => {
+    const { result, stagedScriptRetained } = runAdminApprovalScript(
+      undefined,
+      0,
+      EXPECTED_REQUEST_ID,
+      { cronRunOutput, cronRunExitCode: 1 },
+    );
+    expect(result.status).toBe(29);
+    expect(result.stderr).toContain("ADMIN_DIAGNOSTIC=command-failed");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("private-sentinel");
+    expect(stagedScriptRetained).toBe(false);
+  });
+
   it("accepts completed cron output after a CLI banner (#13342)", () => {
     const { result } = runAdminApprovalScript(undefined, 0, EXPECTED_REQUEST_ID, {
       cronRunOutput: `OpenClaw ready\n${JSON.stringify(COMPLETED_CRON_RUN)}`,
@@ -576,6 +633,43 @@ describe("prepared connect-shell administrative approval", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("ISSUE_5324_ADMIN_APPROVAL_OK");
   });
+
+  it.each([
+    ["error", "failed", "cron-run-error"],
+    ["skipped", "failed", "cron-run-skipped"],
+    ["ok", "failed", "cron-completion-failed"],
+    ["ok", "unknown", "cron-completion-unknown"],
+  ])(
+    "retains the pinned terminal %s/%s category on CLI exit 1",
+    (status, completionStatus, diagnostic) => {
+      const response = {
+        ...COMPLETED_CRON_RUN,
+        status,
+        completionStatus,
+        run: {
+          ...COMPLETED_CRON_RUN.run,
+          status,
+          completionStatus,
+          error: "private generated text test-gateway-token",
+        },
+      };
+      const { commands, result, stagedScriptRetained } = runAdminApprovalScript(
+        undefined,
+        0,
+        EXPECTED_REQUEST_ID,
+        { cronRunOutput: `OpenClaw ready\n${JSON.stringify(response)}`, cronRunExitCode: 1 },
+      );
+      expect(result.status).toBe(29);
+      expect(result.stderr).toContain("ADMIN_CRON_RUN_FAILED");
+      expect(result.stderr).toContain(`ADMIN_DIAGNOSTIC=${diagnostic}`);
+      expect(result.stdout).not.toContain("ISSUE_5324_ADMIN_APPROVAL_OK");
+      expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+        /cron-1|run-1|private generated text|test-gateway-token/,
+      );
+      expect(commands.filter((command) => command.startsWith("cron run "))).toHaveLength(1);
+      expect(stagedScriptRetained).toBe(false);
+    },
+  );
 
   it("rejects malformed cron output and removes its staged script (#13342)", () => {
     const { result, stagedScriptRetained } = runAdminApprovalScript(

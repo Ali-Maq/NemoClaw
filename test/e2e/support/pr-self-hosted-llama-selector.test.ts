@@ -354,6 +354,17 @@ describe.concurrent("generic NVIDIA GPU PR selection", () => {
     },
   );
 
+  it("selects the generic GPU E2E when only its llama.cpp diagnostics owner changes", async ({
+    expect,
+  }) => {
+    const result = await selectGenericGpuLane([
+      "test/e2e/fixtures/llama-cpp-runtime-diagnostics.ts",
+    ]);
+    expect(result).toBe(
+      `base_sha=${BASE_SHA}\nhead_sha=${CANDIDATE_SHA}\npr_number=8748\nselected=true`,
+    );
+  });
+
   it.for(ARM64_PROOF_AUTHORITY_PATHS)(
     "does not select the Docker-qualified AMD64 GPU job for ARM64 proof owner %s",
     async (changedFile, { expect }) => {

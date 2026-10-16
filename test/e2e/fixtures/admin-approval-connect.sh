@@ -27,14 +27,39 @@ cron_name=__NEMOCLAW_ADMIN_CRON_NAME__
 expected_request_id=__NEMOCLAW_ADMIN_EXPECTED_REQUEST_ID__
 verify_cron=__NEMOCLAW_ADMIN_VERIFY_CRON__
 emit_admin_diagnostic() {
-  python3 - "$1" "${2:-command}" <<'PY_ADMIN_DIAGNOSTIC'
-import re, sys
+  python3 - "$1" "${2:-command}" "${3:-}" <<'PY_ADMIN_DIAGNOSTIC'
+import json, re, sys
 from pathlib import Path
 try:
     with Path(sys.argv[1]).open('rb') as stream:
         raw=stream.read(65536).decode('utf-8', errors='replace')
 except FileNotFoundError: raw=''
 # Emit only fixed categories, never device records, identities, tokens or traceback text.
+if sys.argv[2] == 'cron-run':
+    terminal_labels={
+        ('error', 'failed'): 'cron-run-error',
+        ('skipped', 'failed'): 'cron-run-skipped',
+        ('ok', 'failed'): 'cron-completion-failed',
+        ('ok', 'unknown'): 'cron-completion-unknown',
+    }
+    decoder=json.JSONDecoder()
+    for index, char in enumerate(raw):
+        if char != '{': continue
+        try: value,_=decoder.raw_decode(raw[index:])
+        except (ValueError, RecursionError): continue
+        if not isinstance(value, dict) or value.get('ok') is not True or value.get('completed') is not True: continue
+        run_id=value.get('runId')
+        run=value.get('run')
+        status=value.get('status')
+        completion=value.get('completionStatus')
+        if not isinstance(run_id, str) or not run_id.strip() or not isinstance(run, dict): continue
+        if not isinstance(status, str) or not isinstance(completion, str): continue
+        if run.get('jobId') != sys.argv[3] or run.get('runId') != run_id: continue
+        if run.get('status') != status or run.get('completionStatus') != completion: continue
+        label=terminal_labels.get((status, completion))
+        if label:
+            print(f'ADMIN_DIAGNOSTIC={label}', file=sys.stderr)
+            raise SystemExit(0)
 selection_checks=(
     ('selection-state-read', r'canonical pairing-state|canonical device state|canonical primary device identity|FileNotFoundError|PermissionError|sqlite3\.'),
     ('selection-local-identity', r'local CLI identity'),
@@ -161,7 +186,7 @@ echo "ISSUE_5324_STAGE=cron-run"
 # Keep the completion wait inside the caller's four-minute approval budget.
 if ! run_with_bounded_output "$cron_run_output" openclaw cron run "$cron_id" --wait --wait-timeout 2m --timeout 10000; then
   echo "ADMIN_CRON_RUN_FAILED" >&2
-  emit_admin_diagnostic "$cron_run_output"
+  emit_admin_diagnostic "$cron_run_output" cron-run "$cron_id"
   exit 29
 fi
 if ! python3 - "$cron_run_output" "$cron_id" <<'PY_CRON_RUN'; then
