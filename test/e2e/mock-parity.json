@@ -53,7 +53,8 @@
         "test/e2e/fixtures/issue-4462-admin-approval-evidence.ts",
         "test/e2e/lib/issue-4462-admin-request-selector.py",
         "test/e2e/live/openclaw-admin-scope.ts",
-        "test/e2e/live/gpu-e2e-helpers.ts"
+        "test/e2e/live/gpu-e2e-helpers.ts",
+        "test/e2e/fixtures/llama-cpp-runtime-diagnostics.ts"
       ],
       "fast": [
         "src/lib/inference/llama-cpp/index.test.ts",
@@ -634,8 +635,7 @@
         "src/lib/actions/sandbox/doctor-inference.test.ts",
         "src/lib/actions/sandbox/status.test.ts",
         "src/lib/inference/local.test.ts",
-        "src/lib/inference/local-model-profile/cleanup-vllm-absence.test.ts",
-        "test/e2e/support/llama-cpp-generic-gpu-diagnostics.test.ts"
+        "src/lib/inference/local-model-profile/cleanup-vllm-absence.test.ts"
       ]
     },
     {

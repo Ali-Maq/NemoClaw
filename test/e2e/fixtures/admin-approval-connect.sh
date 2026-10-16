@@ -181,6 +181,8 @@ for index, char in enumerate(raw):
         value.get('completed') is True
         and value.get('status') == 'ok'
         and value.get('completionStatus') == 'succeeded'
+        and run.get('status') == 'ok'
+        and run.get('completionStatus') == 'succeeded'
         and run.get('jobId') == sys.argv[2]
         and run.get('runId') == run_id
     ): raise SystemExit(0)

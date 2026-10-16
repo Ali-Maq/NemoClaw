@@ -545,6 +545,14 @@ describe("prepared connect-shell administrative approval", () => {
     ["wrong run", { ...COMPLETED_CRON_RUN, run: { ...COMPLETED_CRON_RUN.run, runId: "other" } }],
     ["failed completion", { ...COMPLETED_CRON_RUN, completionStatus: "failed" }],
     ["skipped run", { ...COMPLETED_CRON_RUN, status: "skipped" }],
+    [
+      "nested failed run with outer success",
+      { ...COMPLETED_CRON_RUN, run: { ...COMPLETED_CRON_RUN.run, status: "error" } },
+    ],
+    [
+      "nested skipped completion with outer success",
+      { ...COMPLETED_CRON_RUN, run: { ...COMPLETED_CRON_RUN.run, completionStatus: "skipped" } },
+    ],
     ["missing completion record", { ...COMPLETED_CRON_RUN, run: null }],
   ])("rejects %s before reporting approval success (#13342)", (_case, response) => {
     const { commands, result, stagedScriptRetained } = runAdminApprovalScript(

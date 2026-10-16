@@ -6,7 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { ArtifactSink } from "../fixtures/artifacts.ts";
-import { withManagedLlamaCppFailureDiagnostics } from "../live/gpu-e2e-helpers.ts";
+import {
+  captureManagedLlamaCppRuntimeLogs,
+  withManagedLlamaCppFailureDiagnostics,
+} from "../fixtures/llama-cpp-runtime-diagnostics.ts";
 
 const runtime = { providerId: "docker", runtimeId: "a".repeat(64) };
 
@@ -94,3 +97,28 @@ it("does not capture extra logs on ordinary success", async () => {
   expect(capture).not.toHaveBeenCalled();
   expect(writeJson).not.toHaveBeenCalled();
 });
+
+it.each(["setup", "post-agent"] as const)(
+  "captures %s through the same bounded runtime owner",
+  async (phase) => {
+    const capture = vi.fn().mockReturnValue({
+      status: 1,
+      error: new Error("runtime unavailable"),
+      stdout: "",
+      stderr: "container absent",
+    });
+    const writeJson = vi.fn().mockResolvedValue(undefined);
+    await captureManagedLlamaCppRuntimeLogs({ capture }, { writeJson }, runtime, phase);
+    expect(capture).toHaveBeenCalledExactlyOnceWith(
+      ["container", "logs", "--tail", "20000", runtime.runtimeId],
+      30_000,
+    );
+    expect(writeJson).toHaveBeenCalledExactlyOnceWith(`managed-runtime-logs-${phase}.json`, {
+      ...runtime,
+      status: 1,
+      error: "runtime unavailable",
+      stdout: "",
+      stderr: "container absent",
+    });
+  },
+);
