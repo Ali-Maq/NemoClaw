@@ -389,7 +389,8 @@ async fn pulled_incompatible_image_fails_before_storage(s: &Scenario) {
     assert_eq!(read(root, "engine.json")["effects"], 1);
 }
 
-// An already present incompatible image must fail before any owned resources exist.
+// The fast host-image matrix owns label variations. Each backend keeps this
+// native check that a private invalid value is rejected before any mutation.
 async fn present_incompatible_images_fail_before_effects(s: &Scenario) {
     let root = s.root.as_path();
     let original = read(root, "fixture.json");
@@ -399,21 +400,15 @@ async fn present_incompatible_images_fail_before_effects(s: &Scenario) {
         "engine.json",
         &json!({"effects":0,"creates":0,"image_missing":false,"pulls":0}),
     );
-    for backend in [None, Some("other"), Some("PRIVATE_IMAGE_SENTINEL")] {
-        let mut stale = original.clone();
-        let labels = stale["image"]["Config"]["Labels"].as_object_mut().unwrap();
-        labels.remove("org.nemoclaw.backend");
-        if let Some(backend) = backend {
-            labels.insert("org.nemoclaw.backend".into(), json!(backend));
-        }
-        save(root, "fixture.json", &stale);
-        for command in ["plan", "apply"] {
-            let error = String::from_utf8(s.run(command, "config.yaml", false).await).unwrap();
-            assert!(error.contains("org.nemoclaw.backend"), "{error}");
-            assert!(!error.contains("PRIVATE_IMAGE_SENTINEL"), "{error}");
-            assert_eq!(read(root, "engine.json")["effects"], 0);
-            assert_eq!(s.gateway.state.lock().unwrap().effects, 0);
-        }
+    let mut stale = original.clone();
+    stale["image"]["Config"]["Labels"]["org.nemoclaw.backend"] = json!("PRIVATE_IMAGE_SENTINEL");
+    save(root, "fixture.json", &stale);
+    for command in ["plan", "apply"] {
+        let error = String::from_utf8(s.run(command, "config.yaml", false).await).unwrap();
+        assert!(error.contains("org.nemoclaw.backend"), "{error}");
+        assert!(!error.contains("PRIVATE_IMAGE_SENTINEL"), "{error}");
+        assert_eq!(read(root, "engine.json")["effects"], 0);
+        assert_eq!(s.gateway.state.lock().unwrap().effects, 0);
     }
     save(root, "fixture.json", &original);
     save(root, "engine.json", &engine);
