@@ -167,6 +167,7 @@ function runAdminApprovalScript(
     expectedRequestId?: string;
     verifyCronConsumer?: boolean;
     cronRunOutput?: string;
+    cronRunError?: string;
     terminal?: boolean;
     cleanupFails?: boolean;
     tamperScript?: boolean;
@@ -250,7 +251,7 @@ if [ "\${FAKE_OPENCLAW_FAIL:-}" = "$1:$2" ]; then
     devices:list) printf '%s\\n' 'gateway connection unavailable token=test-gateway-token device=${EXPECTED_DEVICE_ID}' >&2 ;;
     devices:approve) printf '%s\\n' 'approval denied by policy request=${EXPECTED_REQUEST_ID} publicKey=${EXPECTED_PUBLIC_KEY}' >&2 ;;
     cron:add) printf '%s\\n' 'scope upgrade pending approval cron=cron-1' >&2 ;;
-    cron:run) printf '%s\\n' 'request timed out cron=cron-1' >&2 ;;
+    cron:run) printf '%s\\n' "$FAKE_CRON_RUN_ERROR" >&2 ;;
   esac
   python3 -c 'import sys; sys.stderr.buffer.write(b"x" * int(sys.argv[1]))' "$FAKE_FAILURE_OUTPUT_PADDING_BYTES"
   exit 91
@@ -279,6 +280,7 @@ esac
     FAKE_OPENCLAW_FAIL: failureCommand ?? "",
     FAKE_OPENCLAW_LOG: commandLogPath,
     FAKE_CRON_RUN_OUTPUT: options.cronRunOutput ?? JSON.stringify(COMPLETED_CRON_RUN),
+    FAKE_CRON_RUN_ERROR: options.cronRunError ?? "request timed out cron=cron-1",
     FAKE_OPENSHELL_ARGV_LOG: openshellArgvLogPath,
     FAKE_FAILURE_OUTPUT_PADDING_BYTES: String(failureOutputPaddingBytes),
     FAKE_MKTEMP_COUNTER: mktempCounterPath,
@@ -629,6 +631,22 @@ describe("prepared connect-shell administrative approval", () => {
     const { commands, result } = runAdminApprovalScript(undefined, 0, VERSION_ONE_REQUEST_ID);
     expect(result.status, result.stderr).toBe(0);
     expect(commands).toContain(`devices approve ${VERSION_ONE_REQUEST_ID}`);
+  });
+
+  it("distinguishes pinned cron wait exhaustion without exposing its run identity", () => {
+    const { commands, result, stagedScriptRetained } = runAdminApprovalScript(
+      "cron:run",
+      0,
+      EXPECTED_REQUEST_ID,
+      {
+        cronRunError: "timed out waiting for cron run private-run-id token=test-gateway-token",
+      },
+    );
+    expect(result.status).toBe(29);
+    expect(result.stderr).toContain("ADMIN_DIAGNOSTIC=cron-wait-timeout");
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/private-run-id|test-gateway-token/);
+    expect(commands).toHaveLength(4);
+    expect(stagedScriptRetained).toBe(false);
   });
 
   it.each([

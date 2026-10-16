@@ -3,6 +3,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { ContainerEngine } from "../../../src/lib/adapters/container-engine.ts";
+import type { ArtifactSink } from "../fixtures/artifacts.ts";
 import { ownChildProcess } from "../../helpers/child-process-lifecycle.ts";
 
 import { buildAvailabilityProbeEnv } from "../fixtures/availability-env.ts";
@@ -20,6 +22,38 @@ import type { ShellProbeResult } from "../fixtures/shell-probe.ts";
 import { stripAnsi } from "./json-envelope.ts";
 
 export { REPO_ROOT };
+
+/** Keep the owned backend's failure evidence before registered teardown removes it. */
+export async function withManagedLlamaCppFailureDiagnostics(
+  run: () => Promise<void>,
+  engine: Pick<ContainerEngine, "capture">,
+  artifacts: Pick<ArtifactSink, "writeJson">,
+  runtime: { providerId: string; runtimeId: string },
+): Promise<void> {
+  let completed = false;
+  try {
+    await run();
+    completed = true;
+  } finally {
+    if (!completed) {
+      try {
+        const logs = engine.capture(
+          ["container", "logs", "--tail", "20000", runtime.runtimeId],
+          30_000,
+        );
+        await artifacts.writeJson("managed-runtime-logs-failure.json", {
+          ...runtime,
+          status: logs.status,
+          error: logs.error?.message ?? null,
+          stdout: logs.stdout,
+          stderr: logs.stderr,
+        });
+      } catch {
+        // Diagnostic transport or storage failure must preserve the original assertion.
+      }
+    }
+  }
+}
 
 /** The export fixture owns only this attached daemon; onboarding owns the auth proxy. */
 export function startAttachedOllama(progress: TestProgress, environment: NodeJS.ProcessEnv) {

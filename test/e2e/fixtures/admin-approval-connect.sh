@@ -51,6 +51,7 @@ checks=(
     ('approval-not-pending', r'No pending device request matches'),
     ('self-approval-rejected', r"This device can't approve its own scope upgrade"),
     ('approval-token-handoff-failed', r'Admin approval completed, but its token handoff'),
+    ('cron-wait-timeout', r'timed out waiting for cron run '),
     ('timeout', r'timed?\s*out|timeout'),
     ('pairing-required', r'device pairing|required.*pairing|pairing required'),
     ('authorization-rejected', r'denied|forbidden|unauthorized|approval.*(?:failed|rejected)'),
