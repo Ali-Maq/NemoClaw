@@ -1446,13 +1446,9 @@ async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_
     fixture.state.lock().unwrap().configuration_error = Some(serde_json::json!({
         "error": {"stage":"start", "code":"lifecycle_adapter_start_failed", "runtime_state":"unavailable", "message":"native-secret-must-not-escape"}
     }));
-    // Redaction rules belong to nemoclaw-sdk's process tests; this checks
-    // that each rule reaches both output formats of a failed apply.
-    for (secret, format) in [
-        ("a", "text"),
-        ("lifecycle_adapter_start_failed", "json"),
-        ("inert-credential-for-context-check", "text"),
-    ] {
+    // The process tests own the credential/context matrix. Keep the native
+    // withholding and collision paths here, including failure recovery.
+    for (secret, format) in [("a", "text"), ("lifecycle_adapter_start_failed", "json")] {
         let failed = invoke("apply", format, secret);
         assert_eq!(failed.status.code(), Some(1));
         let stdout = String::from_utf8(failed.stdout).unwrap();
@@ -1475,23 +1471,14 @@ async fn cli_redaction_preserves_failures_and_recovery_with_short_and_colliding_
                 !message.contains("[redacted]"),
                 "short-value character matches must not escape"
             );
-        } else if secret == "lifecycle_adapter_start_failed" {
+        } else {
+            assert!(message.contains("sandbox/assistant"), "{message}");
             assert!(message.contains("[redacted]"), "{message}");
             assert!(
                 message.contains("agent runtime is unavailable"),
                 "{message}"
             );
             assert!(!message.contains(secret));
-        } else {
-            assert!(message.contains("sandbox/assistant"), "{message}");
-            assert!(
-                message.contains("lifecycle_adapter_start_failed"),
-                "{message}"
-            );
-            assert!(
-                message.contains("agent runtime is unavailable"),
-                "{message}"
-            );
         }
         assert!(!message.contains("[[redacted]]"));
         assert!(!stdout.contains("native-secret-must-not-escape"));
