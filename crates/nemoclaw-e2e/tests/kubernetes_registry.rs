@@ -18,7 +18,7 @@ const HTPASSWD: &str =
 const SECRET: &str = "image-pull-fixture";
 const OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 
-async fn docker(args: &[&str], capture: bool) -> Vec<u8> {
+async fn docker(operation: &'static str, args: &[&str], capture: bool) -> Vec<u8> {
     let output = tokio::time::timeout(
         Duration::from_secs(120),
         Command::new("docker")
@@ -38,7 +38,8 @@ async fn docker(args: &[&str], capture: bool) -> Vec<u8> {
     .expect("cannot execute Docker for the owned registry fixture");
     assert!(
         output.status.success(),
-        "owned registry fixture command failed"
+        "owned registry fixture {operation} failed: {}",
+        output.status
     );
     assert!(
         output.stdout.len() <= 1024 * 1024,
@@ -107,7 +108,8 @@ impl Registry {
             format!("{}-control-plane", context.strip_prefix("kind-").unwrap())
         );
         let inspected: Value =
-            serde_json::from_slice(&docker(&["inspect", &node], true).await).unwrap();
+            serde_json::from_slice(&docker("inspect kind node", &["inspect", &node], true).await)
+                .unwrap();
         assert_eq!(
             inspected[0]["Config"]["Labels"]["io.x-k8s.kind.cluster"],
             context.strip_prefix("kind-").unwrap()
@@ -128,6 +130,7 @@ impl Registry {
         );
         let id = String::from_utf8(
             docker(
+                "create registry",
                 &[
                     "create",
                     "--name",
@@ -166,9 +169,16 @@ impl Registry {
                 .build()
                 .unwrap(),
         };
-        docker(&["start", &registry.id], false).await;
-        let address =
-            String::from_utf8(docker(&["port", &registry.id, "5000/tcp"], true).await).unwrap();
+        docker("start registry", &["start", &registry.id], false).await;
+        let address = String::from_utf8(
+            docker(
+                "read registry port",
+                &["port", &registry.id, "5000/tcp"],
+                true,
+            )
+            .await,
+        )
+        .unwrap();
         let address: std::net::SocketAddr = address.trim().parse().unwrap();
         assert!(address.ip().is_loopback());
         registry.url = format!("http://{address}");
@@ -228,8 +238,14 @@ impl Registry {
             format!("{hosts}capabilities = [\"pull\", \"resolve\"]\n").as_bytes(),
         );
         let cri_dir = format!("/etc/containerd/certs.d/{}", self.authority);
-        docker(&["exec", &self.node, "mkdir", "-p", &cri_dir], false).await;
         docker(
+            "create CRI host directory",
+            &["exec", &self.node, "mkdir", "-p", &cri_dir],
+            false,
+        )
+        .await;
+        docker(
+            "copy CRI host configuration",
             &[
                 "cp",
                 public.to_str().unwrap(),
@@ -251,11 +267,13 @@ impl Registry {
         let seed = format!("/tmp/{}/push", self.authority.replace(':', "-"));
         let seed_dir = format!("{seed}/{}", self.authority);
         docker(
+            "create seed host directory",
             &["exec", &self.node, "mkdir", "-p", "-m", "700", &seed_dir],
             false,
         )
         .await;
         docker(
+            "copy seed authorization",
             &[
                 "cp",
                 push.to_str().unwrap(),
@@ -266,6 +284,7 @@ impl Registry {
         .await;
         let tagged = format!("{}/agent:fixture", self.authority);
         docker(
+            "tag fixture image",
             &[
                 "exec", &self.node, "ctr", "-n", "k8s.io", "images", "tag", &reference, &tagged,
             ],
@@ -273,6 +292,7 @@ impl Registry {
         )
         .await;
         docker(
+            "seed registry",
             &[
                 "exec",
                 &self.node,
@@ -289,11 +309,13 @@ impl Registry {
         )
         .await;
         docker(
+            "remove seed authorization",
             &["exec", &self.node, "rm", &format!("{seed_dir}/hosts.toml")],
             false,
         )
         .await;
         docker(
+            "remove seed image alias",
             &[
                 "exec", &self.node, "ctr", "-n", "k8s.io", "images", "rm", &tagged,
             ],
