@@ -72,6 +72,32 @@ if sys.argv[2] == 'cron-run':
             diagnostics=run.get('diagnostics')
             entries=diagnostics.get('entries') if isinstance(diagnostics, dict) else None
             sources=('cron-preflight', 'cron-setup', 'model-preflight', 'agent-run', 'tool', 'exec', 'delivery')
+            # Observe fixed error-text signatures, not provider or tool causality.
+            messages={
+                'LLM request timed out.': 'message-llm-timeout',
+                'LLM request failed.': 'message-llm-failed',
+                'LLM request failed with an unknown error.': 'message-llm-unknown',
+                'LLM request failed: provider returned an internal error.': 'message-llm-provider-internal',
+                'The selected model was not found by the provider. Check the model id or choose a different model.': 'message-model-not-found',
+                'Code Mode could not resolve a configured MCP tool.': 'message-code-mode-catalog-miss',
+            }
+            http_signatures={str(code): f'error-text-http-{code}' for code in range(400, 600)}
+            # Anchored subset of the pinned assistant-error-format HTTP grammar.
+            http_patterns=(
+                r'(?:http\s*)?([45][0-9]{2})(?:(?:\s*:\s*|\s+)[\s\S]+)?',
+                r'api\s*error\s*\(([45][0-9]{2})\)(?:\s*:\s*[\s\S]*)?',
+                r'(?:status code|unexpected status|http status)\s*[:=]?\s*([45][0-9]{2})\b(?:\s*[:,]?\s*(?:message\s*:\s*)?[\s\S]*)?',
+            )
+            def error_signature(message):
+                if not isinstance(message, str): return None
+                if message in messages: return messages[message]
+                text=re.sub(r'^error\s*[:,]\s*', '', message.strip(), count=1, flags=re.IGNORECASE | re.ASCII)
+                for pattern in http_patterns:
+                    match=re.fullmatch(pattern, text, flags=re.IGNORECASE | re.ASCII)
+                    if match: return http_signatures.get(match[1])
+                return None
+            signature=error_signature(run.get('error'))
+            signatures=[f'run:{signature}'] if signature else []
             pairs=[]
             for entry in entries[:10] if isinstance(entries, list) else []:
                 if not isinstance(entry, dict): continue
@@ -81,7 +107,12 @@ if sys.argv[2] == 'cron-run':
                 if not isinstance(severity, str) or severity not in ('info', 'warn', 'error'): continue
                 pair=f'{source}:{severity}'
                 if pair not in pairs: pairs.append(pair)
+                signature=error_signature(entry.get('message')) if severity == 'error' else None
+                if signature:
+                    observation=f'{source}:{signature}'
+                    if observation not in signatures: signatures.append(observation)
             print('ADMIN_CRON_DIAGNOSTIC_SOURCES=' + (','.join(pairs) or 'unavailable'), file=sys.stderr)
+            print('ADMIN_CRON_ERROR_SIGNATURES=' + (','.join(signatures) or 'unavailable'), file=sys.stderr)
             raise SystemExit(0)
 selection_checks=(
     ('selection-state-read', r'canonical pairing-state|canonical device state|canonical primary device identity|FileNotFoundError|PermissionError|sqlite3\.'),
