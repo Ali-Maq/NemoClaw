@@ -59,6 +59,29 @@ if sys.argv[2] == 'cron-run':
         label=terminal_labels.get((status, completion))
         if label:
             print(f'ADMIN_DIAGNOSTIC={label}', file=sys.stderr)
+            # Pinned cron metadata has closed vocabularies; never export free-text errors.
+            reasons=(
+                'auth', 'auth_permanent', 'format', 'rate_limit', 'overloaded', 'billing',
+                'server_error', 'timeout', 'tls_certificate', 'context_overflow',
+                'model_not_found', 'session_expired', 'empty_response', 'no_error_details',
+                'unclassified', 'unknown',
+            )
+            reason=run.get('errorReason')
+            reason=reason if isinstance(reason, str) and reason in reasons else 'unavailable'
+            print(f'ADMIN_CRON_ERROR_REASON={reason}', file=sys.stderr)
+            diagnostics=run.get('diagnostics')
+            entries=diagnostics.get('entries') if isinstance(diagnostics, dict) else None
+            sources=('cron-preflight', 'cron-setup', 'model-preflight', 'agent-run', 'tool', 'exec', 'delivery')
+            pairs=[]
+            for entry in entries[:10] if isinstance(entries, list) else []:
+                if not isinstance(entry, dict): continue
+                source=entry.get('source')
+                severity=entry.get('severity')
+                if not isinstance(source, str) or source not in sources: continue
+                if not isinstance(severity, str) or severity not in ('info', 'warn', 'error'): continue
+                pair=f'{source}:{severity}'
+                if pair not in pairs: pairs.append(pair)
+            print('ADMIN_CRON_DIAGNOSTIC_SOURCES=' + (','.join(pairs) or 'unavailable'), file=sys.stderr)
             raise SystemExit(0)
 selection_checks=(
     ('selection-state-read', r'canonical pairing-state|canonical device state|canonical primary device identity|FileNotFoundError|PermissionError|sqlite3\.'),
@@ -186,7 +209,7 @@ echo "ISSUE_5324_STAGE=cron-run"
 # Keep the completion wait inside the caller's four-minute approval budget.
 if ! run_with_bounded_output "$cron_run_output" openclaw cron run "$cron_id" --wait --wait-timeout 2m --timeout 10000; then
   echo "ADMIN_CRON_RUN_FAILED" >&2
-  emit_admin_diagnostic "$cron_run_output" cron-run "$cron_id"
+  emit_admin_diagnostic "$cron_run_output" cron-run "$cron_id" || echo "ADMIN_DIAGNOSTIC=unavailable" >&2
   exit 29
 fi
 if ! python3 - "$cron_run_output" "$cron_id" <<'PY_CRON_RUN'; then
