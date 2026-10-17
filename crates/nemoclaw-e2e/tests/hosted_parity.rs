@@ -29,12 +29,14 @@ fn authored_document(raw: &[u8], current: &[u8]) -> Document {
         "hermes" => json!("nvidia.fabric.hermes"),
         other => panic!("unexpected historical fixture adapter {other}"),
     };
-    if let Some(interfaces) = harness.remove("interfaces") {
-        harness.insert(
-            "settings".into(),
-            json!({"mode":"service","interfaces":interfaces}),
-        );
-    }
+    // v0 exposed Hermes's native API; v1 cannot until Fabric's Hermes adapter
+    // serves it (NVIDIA/NemoClaw#13321), so authored intent omits it.
+    let interfaces = harness.remove("interfaces");
+    assert_eq!(
+        interfaces.is_some(),
+        harness["kind"] == "nvidia.fabric.hermes",
+        "only the Hermes export declares native interfaces"
+    );
     // v0 images ran agents as 1000:1000; v1 images use 10001:10001.
     if let Some(process) = sandbox
         .get_mut("network")
@@ -164,10 +166,7 @@ fn hosted_hermes_scenario_preserves_authored_intent() {
     );
     assert_hosted_document(&v1, "nvidia.fabric.hermes".parse().unwrap(), "/opt/hermes");
     let harness = v1.sandbox_harness(&v1.spec.sandboxes[0]).unwrap();
-    assert_eq!(
-        harness.settings.as_ref().unwrap()["interfaces"],
-        json!({"api":{"port":8643}})
-    );
+    assert!(harness.settings.is_none(), "{:?}", harness.settings);
 }
 
 #[cfg(target_os = "linux")]
@@ -259,7 +258,6 @@ mod live {
             resource_sources: Default::default(),
             unverified: vec![],
             retained: vec![],
-            health: vec![],
             discovery: Default::default(),
         }
     }
@@ -330,10 +328,6 @@ mod live {
         assert_eq!(applied.changes, expected);
         assert!(applied.deferred.is_empty());
         assert!(applied.retained.is_empty());
-        assert_eq!(applied.health.len(), 1);
-        assert_eq!(applied.health[0].sandbox, "assistant");
-        assert_eq!(applied.health[0].agents, ["primary"]);
-        assert!(applied.health[0].health.allows_apply_completion());
     }
 
     async fn destroy(
@@ -353,7 +347,6 @@ mod live {
                 resource_sources: Default::default(),
                 unverified: vec![],
                 retained: retained.clone(),
-                health: vec![],
                 discovery: Default::default(),
             }
         );
@@ -367,7 +360,6 @@ mod live {
                 resource_sources: Default::default(),
                 unverified: vec![],
                 retained: retained.clone(),
-                health: vec![],
                 discovery: Default::default(),
             }
         );
@@ -391,7 +383,6 @@ mod live {
         assert_eq!(plan.outcome, Outcome::Planned);
         assert!(plan.changes.is_empty());
         assert!(plan.retained.is_empty());
-        assert!(plan.health.is_empty());
         assert!(!plan.discovery.resources.is_empty());
         let exported = deployment.export(&cancel).await.unwrap();
         assert_eq!(exported, document);
@@ -440,7 +431,6 @@ mod live {
         assert_eq!(plan.outcome, Outcome::Planned);
         assert!(plan.changes.is_empty());
         assert!(plan.retained.is_empty());
-        assert!(plan.health.is_empty());
         assert!(!plan.discovery.resources.is_empty());
         let unchanged = deployment.apply(&document, &cancel).await.unwrap();
         assert_eq!(unchanged.outcome, Outcome::Succeeded);

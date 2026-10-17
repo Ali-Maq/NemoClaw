@@ -21,7 +21,7 @@ Empty or zero selects a default only where stated.
 - The parser checks the shape of every endpoint URL and the gateway endpoint's transport and address policy; OpenShell checks inference destinations when sandboxes connect. It also checks managed gateway port bounds, canonical private IPv4 /24 networks, local engine socket syntax, and publication address/port/network agreement.
 - Managed Kubernetes requires explicit kubeconfig environment, context, namespace, and development authentication profile; Agent Sandbox and one default StorageClass must already be installed. Its HTTPS endpoint is exactly 127.0.0.1 with an explicit port from 1 through 65535 and no path. Local engine fields and managed inference services are excluded; gateway.runtime.provider is kubernetes or openshift. OpenShift uses the upstream Kubernetes driver and requires platform-owned OpenShift security prerequisites. Cluster identity, ownership, prerequisite compatibility, and credential files are checked during operations.
 - Explicit sandbox policies are also checked by the pinned OpenShell policy parser and validator, including protocol-specific rule semantics, process identities, filesystem paths, and destination address restrictions.
-- Explicit filesystem grants must permit reads of the packaged Fabric runtime and NemoClaw bridge directories; parent and read-write grants count. This parser check does not inspect images, resolve symlinks, or establish runtime permissions.
+- Explicit filesystem grants must permit reads of the paths the selected image's runtime requires, such as Fabric's /opt/fabric; parent and read-write grants count. Planning checks them against the image's metadata; it does not resolve symlinks or establish runtime permissions.
 - The schema requires an explicit default for multiple model choices. Rust checks unique route names, that the default names a route, and that native model and tool fields have valid structural shapes. Fabric validates adapter-specific combinations.
 - The parser resolves integrationRefs only from enclosing deployment or sandbox definitions, rejects name shadowing and missing agent references, and permits at most one attached web search definition per sandbox. Native search must be authored separately through public Fabric configuration and validated by Fabric. Agent-inline definitions attach directly; unused enclosing definitions grant no access.
 - The schema requires exactly one sandbox harness or harnessRef and rejects agent-level harness selection. Rust resolves visible harnesses without shadowing. Each sandbox requires one agent and hosts one Fabric runtime using the sandbox-selected implementation. Shared definitions reuse configuration across sandboxes.
@@ -159,6 +159,70 @@ Paths:
 | `captureSizes` | array of integer | Yes | — | Nonempty list of CUDA graph capture sizes. Constraints: minimum items 1; maximum items 64; items: minimum 1; maximum 65536. |
 | `cudagraphMode` | string | Yes | — | CUDA graph execution mode. Constraints: `"NONE"` or `"FULL_DECODE_ONLY"`. |
 | `mode` | integer | Yes | — | Compilation mode understood by the pinned vLLM image. Constraints: minimum 0; maximum 3. |
+
+## ContainerData
+
+An owned disposable data volume. The image must supply a mount directory writable by its configured user.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.data`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `mountPath` | string | Yes | — | /data or one application directory below /var/lib. Constraints: pattern `^(/data\|/var/lib/[a-z][a-z0-9-]{0,62})$`. |
+
+## ContainerExecution
+
+Container execution limits, independent of application/model memory policy.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.container`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `cpuLimitMillis` | integer | No | — | CPU limit in millicores. Omission leaves CPU usage unrestricted. Constraints: minimum 1; maximum 4294967295. |
+| `gpu` | boolean | No | — | Expose the engine's GPU devices. Omission leaves GPU access disabled. |
+| `ipc` | [ServiceIpc](#serviceipc) | No | — | Private IPC by default; host shares the host IPC namespace. |
+| `memoryLimitGiB` | integer | No | — | Container memory limit in GiB; not a GPU-memory reservation. Omission selects 1 GiB. Constraints: minimum 1; maximum 8589934591. |
+| `sharedMemoryGiB` | integer | No | — | Shared memory in GiB. Omission selects 64 MiB. Constraints: minimum 1; maximum 64. |
+| `ulimits` | map of integer | No | — | Process limits by Docker limit name. Each value sets both soft and hard limits; -1 means unlimited. |
+
+## ContainerPublication
+
+One application TCP listener on the host.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.publication`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `bindAddress` | string | Yes | — | Loopback or private host IPv4 address. |
+| `port` | integer | Yes | — | Same unprivileged TCP port inside the container and on the host. Constraints: minimum 1024; maximum 65535. |
+
+## ContainerReadiness
+
+Readiness observation. Omission uses the image's Docker HEALTHCHECK.
+
+Guide: [Configuration and credentials](../usage.md#configuration-and-credentials).
+
+Paths:
+
+- `spec.services.{key}.readiness`
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `path` | any JSON value | No | — | HTTP GET path on the container's listener. Success requires HTTP 200; redirects are not followed. |
+| `runtimeStatus` | any JSON value | No | — | Managed-runtime status file containing phase and updated. Requires a ready report from this container start, not an old volume's report. |
+| `timeoutSeconds` | integer | No | — | Startup wait in seconds, 1–3600. Omission selects 300. Constraints: minimum 1; maximum 3600. |
 
 ## Credential
 
@@ -337,7 +401,7 @@ Paths:
 
 Accepted input: string.
 
-Constraints: `"dgx-spark"` or `"dgx-station"` or `"gb200"` or `"gb300"` or `"gh200"` or `"h100"` or `"h200"` or `"a100"` or `"a10"` or `"a10g"` or `"a40"` or `"l4"` or `"l40"` or `"l40s"` or `"t4"` or `"rtx-6000-ada"` or `"rtx-pro-6000-blackwell"` or `"rtx-3090"` or `"rtx-4090"` or `"rtx-5090"`.
+Constraints: `"dgx-spark"` or `"rtx-spark"` or `"dgx-station"` or `"gb200"` or `"gb300"` or `"gh200"` or `"h100"` or `"h200"` or `"a100"` or `"a10"` or `"a10g"` or `"a40"` or `"l4"` or `"l40"` or `"l40s"` or `"t4"` or `"rtx-6000-ada"` or `"rtx-pro-6000-blackwell"` or `"rtx-3090"` or `"rtx-4090"` or `"rtx-5090"`.
 
 ## Harness
 
@@ -439,7 +503,7 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
-| `api` | [InferenceApi](#inferenceapi) | No | — | Request API. Omission selects anthropic-messages for Anthropic providers and openai-completions for OpenAI providers; explicit values are preserved for Fabric validation. |
+| `api` | [InferenceApi](#inferenceapi) | No | — | Request API. Omission selects anthropic-messages for Anthropic providers and openai-completions for OpenAI providers. NemoClaw uses it to read the endpoint's model catalog; agents use the protocol their adapter selects for the provider. |
 | `credential` | [Credential](#credential) | No | — | Optional API credential reference for an external HTTPS endpoint. Excluded by serviceRef. |
 | `endpoint` | string | Without serviceRef | — | Inference HTTP(S) URL owned outside the deployment. Required without serviceRef and excluded with serviceRef. |
 | `name` | string | Yes | — | Provider name referenced by model choices. Constraints: pattern `^[a-z][a-z0-9-]{0,39}$`. |
@@ -676,6 +740,7 @@ Paths:
 
 | Field | Input type | Required | Default | Description and constraints |
 |---|---|---|---|---|
+| `extensions` | object | No | — | Model fields the selected adapter declares as extensions, such as Pi's context_window; Fabric validates them. |
 | `maxTokens` | integer | No | — | Maximum output tokens requested from the native adapter. Constraints: minimum 1; maximum 4294967295. |
 | `model` | string | Yes | — | Model identifier. For a managed service, match its recipe serving.modelName or, without a recipe, model.repository. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$`. |
 | `settings` | object | No | — | Opaque native model settings validated by Fabric's selected model schema. |
@@ -1079,6 +1144,25 @@ Managed vLLM runtime and immutable model snapshot.
 | `recipe` | [InlineRecipe](#inlinerecipe) | Without hardware | — | Inline preparation and serving contract supplied by the pinned runtime image. Required without hardware; excludes hardware. |
 | `serving` | [Serving](#serving) | No | — | Service limits. Omission selects the SDK defaults; recipe serving settings select recipe-specific parsers and execution options. |
 | `updatePolicy` | [ServiceUpdatePolicy](#serviceupdatepolicy) | No | `"Preserve"` | Preserve refuses replacement of a running Docker model container. Recreate permits sequential replacement and possible downtime until removed or changed. |
+
+### Alternative 4
+
+Image-owned container with explicit launch settings and bounded readiness.
+
+
+| Field | Input type | Required | Default | Description and constraints |
+|---|---|---|---|---|
+| `command` | any JSON value | No | — | Optional argument list for the image entrypoint, without implicit shell expansion. |
+| `container` | [ContainerExecution](#containerexecution) | No | — | Execution limits. These do not replace the image's model-memory policy. |
+| `data` | [ContainerData](#containerdata) | No | — | Disposable application data. Omission provides /data; destroy removes this volume. Typed model services retain their own storage policy. |
+| `environment` | map of string | No | — | Literal application settings, visible in configuration, plans/state, exports, and Docker inspection. No host-variable expansion or protected credential delivery. Constraints: keys: pattern `^[A-Z_][A-Z0-9_]{0,127}$`. |
+| `files` | map of string | No | — | Literal nonsecret configuration files uploaded before startup with mode 0444. Contents are retained in plans and state; these are not secret files or immutable mounts. |
+| `image` | string | Yes | — | Immutable application image. The image owns its entrypoint and default command. Constraints: pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`. |
+| `kind` | string | Yes | — | Supported installer selected by this service definition. Constraints: `"container"`. |
+| `port` | integer | No | — | Listener inside the container. It must match the application's own configuration; omission uses publication.port when published. Constraints: minimum 1; maximum 65535. |
+| `publication` | [ContainerPublication](#containerpublication) | No | — | Optional loopback or private IPv4 TCP publication. Omission publishes no port. |
+| `readiness` | [ContainerReadiness](#containerreadiness) | No | — | HTTP, managed-runtime status, or image HEALTHCHECK readiness on every apply. |
+| `user` | string | No | `"65532:65532"` | Numeric UID:GID. Omission selects 65532:65532; root requires an explicit 0:0 for images that need it. Constraints: pattern `^[0-9]{1,9}:[0-9]{1,9}$`. |
 
 ## ServiceHardware
 

@@ -22,6 +22,16 @@ pub const HOST_PROVIDER_ADDRESS: &str = "registry.opentofu.org/nvidia/host";
 /// This repository's providers that take `destroy`.
 pub const NEMOCLAW_PROVIDERS: [&str; 4] = ["openshell", "fabric", "vllm", "ollama"];
 
+/// The kind of the `terraform_data` that holds an agent's configuration. A
+/// changed configuration replaces the agent's sandbox through
+/// `replace_triggered_by`, because Fabric starts one agent runtime per sandbox.
+pub const AGENT_CONFIGURATION: &str = "agent_configuration";
+
+/// The address of the `terraform_data` holding a sandbox's agent configuration.
+pub fn agent_configuration_address(sandbox: &str) -> String {
+    format!("terraform_data.agent_{sandbox}")
+}
+
 /// The OpenTofu resource type that reconciles a resource kind.
 pub fn resource_type(kind: &str) -> String {
     nemoclaw_openshell::resource_type(kind)
@@ -29,6 +39,7 @@ pub fn resource_type(kind: &str) -> String {
         .or_else(|| crate::services::provider_types::runtime_type(kind).map(str::to_owned))
         .unwrap_or_else(|| match kind {
             "agent" => nemoclaw_fabric::agent::RESOURCE_TYPE.to_owned(),
+            AGENT_CONFIGURATION => "terraform_data".to_owned(),
             _ => format!("nemoclaw_{kind}"),
         })
 }
@@ -153,9 +164,8 @@ fn targets_with_plans(
         {
             // The agent's inputs are Fabric's configuration sections; the
             // sandbox fields name the sandbox whose ref the graph passes.
-            let mut values = nemoclaw_fabric::agent::decompose(&crate::fabric_config::for_sandbox(
-                document, sandbox,
-            )?);
+            let configuration = crate::fabric_config::for_sandbox(document, sandbox)?;
+            let mut values = nemoclaw_fabric::agent::decompose(&configuration);
             values.extend([
                 ("workspace".into(), workspace.clone()),
                 (nemoclaw_fabric::agent::SANDBOX.into(), sandbox.name.clone()),
@@ -173,6 +183,11 @@ fn targets_with_plans(
                 kind: "agent".into(),
                 address: format!("{}.{}", nemoclaw_fabric::agent::RESOURCE_TYPE, sandbox.name),
                 values,
+            });
+            result.push(Target {
+                kind: AGENT_CONFIGURATION.into(),
+                address: agent_configuration_address(&sandbox.name),
+                values: [("input".into(), configuration.to_string())].into(),
             });
         }
         result.push(Target {
@@ -432,7 +447,7 @@ fn objects_graph(
     let mut graph = compile_with_plans(document, generations, version, &service_plans, &raw)?;
     crate::docker_compute::configure(&mut graph, &raw)
         .map_err(|_| ConfigError::new("invalid Docker compute graph"))?;
-    crate::services::configure_proxy_readiness(&mut graph, &raw)
+    crate::services::configure_readiness(&mut graph, &raw)
         .map_err(|_| ConfigError::new("invalid proxy readiness graph"))?;
     let targets = crate::docker_compute::targets(&raw)
         .map_err(|_| ConfigError::new("invalid Docker compute plan"))?;
@@ -607,6 +622,27 @@ fn compile_with_plans(
         }
     }
     for target in targets {
+        if target.kind == AGENT_CONFIGURATION {
+            // Only OpenTofu reads it, so it takes no OpenShell rules; like the
+            // objects, it waits for the apply-time gateway check, so a failed
+            // runtime leaves none behind.
+            let (kind, name) = target
+                .address
+                .split_once('.')
+                .expect("internal resource address");
+            let input = target.values["input"]
+                .replace("${", "$${")
+                .replace("%{", "%%{");
+            resources
+                .as_object_mut()
+                .unwrap()
+                .entry(kind)
+                .or_insert_with(|| json!({}))[name] = json!({
+                "input": input,
+                "depends_on": [GATEWAY_APPLY_CAPABILITIES_ADDRESS],
+            });
+            continue;
+        }
         let mut attributes = serde_json::to_value(&target.values).expect("string map");
         if let Some(value) = attributes["credential_source"].as_str() {
             attributes["credential_source"] =
@@ -645,7 +681,7 @@ fn compile_with_plans(
                 let mut value = input.configuration(encoded).map_err(ConfigError::new)?;
                 // Values are still OpenTofu templates; keep literal policy
                 // paths and matchers intact through that interpretation.
-                crate::docker_compute::literal(&mut value);
+                crate::services::literal(&mut value);
                 attributes[input.attribute] = value;
             }
         }
@@ -797,6 +833,14 @@ fn compile_with_plans(
         {
             attributes["lifecycle"]["prevent_destroy"] = json!(true);
         }
+        if target.kind == "sandbox" {
+            let (_, name) = target
+                .address
+                .split_once('.')
+                .expect("internal resource address");
+            attributes["lifecycle"]["replace_triggered_by"] =
+                json!([agent_configuration_address(name)]);
+        }
         let (kind, name) = target
             .address
             .split_once('.')
@@ -818,28 +862,7 @@ fn compile_with_plans(
         "condition":"${self.compatible}",
         "error_message":gateway_error_message("self")
     }]});
-    let agent_readiness: BTreeMap<_, _> = document
-        .spec
-        .sandboxes
-        .iter()
-        .map(|sandbox| {
-            // The agent's ref names its sandbox and the document it applied.
-            let readiness = json!({
-                "gateway": gateway.clone(),
-                "agent": format!("${{{}.{}.ref}}", nemoclaw_fabric::agent::RESOURCE_TYPE, sandbox.name),
-                // uuid() is unknown in a saved plan and records a unique observation
-                // token, so failed applies cannot report stale health as a new result.
-                "read_trigger": "${uuid()}",
-                "lifecycle": {"postcondition":[{
-                    "condition":"${self.ready}",
-                    "error_message":"${self.error_message != null ? self.error_message : \"Fabric readiness could not be established; resources retained\"}"
-                }]},
-            });
-            (sandbox.name.clone(), readiness)
-        })
-        .collect();
     graph["resource"] = resources;
-    graph["data"]["fabric_agent_readiness"] = json!(agent_readiness);
     graph["data"]["openshell_gateway"]["apply"] = apply_readiness;
     Ok(graph)
 }

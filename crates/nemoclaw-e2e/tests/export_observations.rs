@@ -188,7 +188,8 @@ async fn credentialed_inference_applies_without_probes_then_exports_and_destroys
         }));
     assert_eq!(
         teardown.plan_destroy(&cancel).await.unwrap().changes.len(),
-        3
+        // Destroy also removes the agent configuration.
+        4
     );
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
     // One initialization reads bindings; the other plans the teardown graph.
@@ -209,7 +210,10 @@ async fn credentialed_inference_applies_without_probes_then_exports_and_destroys
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a verified NEMOCLAW_TEST_BUNDLE; isolated gateway fixture"]
-async fn export_rejects_observed_pi_model_drift_without_reconfiguring_it() {
+/// Fabric reports no applied configuration, so a model changed inside the
+/// sandbox outside OpenTofu is not drift: export still returns the declared
+/// document, and nothing is reconfigured or rewritten.
+async fn export_ignores_a_pi_model_changed_inside_the_sandbox() {
     let bundle = PathBuf::from(std::env::var_os("NEMOCLAW_TEST_BUNDLE").unwrap());
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::start().await;
@@ -235,7 +239,7 @@ async fn export_rejects_observed_pi_model_drift_without_reconfiguring_it() {
     {
         model["models"]["default"]["model"] = serde_json::json!("foreign-model");
     }
-    assert!(deployment.export(&cancel).await.is_err());
+    assert_eq!(deployment.export(&cancel).await.unwrap(), document);
     assert_eq!(fixture.state.lock().unwrap().effects, effects);
     assert_eq!(
         fs::read(directory.path().join("terraform.tfstate")).unwrap(),

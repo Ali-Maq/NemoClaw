@@ -118,7 +118,7 @@ If an operation fails, preserve the state directory, resolve the reported observ
 ### Recover from Runtime Policy Rejection
 
 If OpenShell reports configuration admission as rejected, apply stops its startup wait and reports `sandbox/<name>: OpenShell configuration rejected`, followed by a safe reason.
-This check applies while the sandbox is starting and before agent configuration or health requests.
+This check applies while the sandbox is starting and before the agent starts.
 Known gateway diagnostics identify policy, attached-provider, or middleware repair; unrecognized text becomes a fixed configuration-repair message.
 The error does not include raw supervisor parser output.
 A sandbox that has not reported rejection still follows the startup wait.
@@ -126,7 +126,7 @@ A sandbox that has not reported rejection still follows the startup wait.
 Preserve the state directory: failed apply retains created resource bindings.
 If the problem is an attached-provider or credential configuration that can be repaired without replacing the sandbox, correct it and reapply using the retained state.
 Apply can deliver that repair; completion still requires OpenShell to accept the configuration.
-If the authored sandbox policy must change, use the [destroy and recreate procedure](usage.md#destroy); apply still refuses policy replacement.
+If the authored sandbox policy must change, change it and apply; a policy that needs a new sandbox replaces it, deleting its files.
 Destroy remains available after the failed first apply and does not require successful admission or readiness.
 
 Local fixture tests exercise creation, rejection, drift detection, and export/reapply behavior.

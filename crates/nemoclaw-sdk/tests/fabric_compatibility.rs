@@ -8,7 +8,6 @@ fn catalog() -> FabricCatalog {
         schema_version: 2,
         fabric_revision: FabricCatalog::bundled().fabric_revision,
         source_sha256: "b".repeat(64),
-        bridge: None,
         targets: Vec::new(),
         adapters: vec![FabricAdapter {
             provenance: json!([{"source":"explicit_local","path":"/image/fixture.fabric-adapter.json","root":"/image"}]),
@@ -126,8 +125,10 @@ fn explicit_filesystem_policy_must_allow_the_image_runtime_directory() {
     );
 }
 
+/// Images run Fabric's own `fabric-agent-ctl`, which reports interface
+/// mismatches itself, so compatibility needs no bridge record.
 #[test]
-fn image_compatibility_requires_a_matching_bridge_contract() {
+fn image_compatibility_needs_no_bridge_record() {
     use nemoclaw_sdk::fabric_capabilities::{
         FabricRequirements, ImageMetadata, Support, assess_image,
     };
@@ -140,34 +141,11 @@ fn image_compatibility_requires_a_matching_bridge_contract() {
         configuration: config(),
         filesystem_read: None,
     };
-    let bridge = json!({
-        "interface_version": 1,
-        "operations": ["validate", "prepare", "configure", "check", "invoke", "serve"],
-        "health_checks": []
-    });
-    let mut raw = serde_json::to_value(catalog()).unwrap();
-    let status = |raw: &serde_json::Value| {
-        let catalog = FabricCatalog::from_json(&raw.to_string()).unwrap();
-        assess_image(Some(&catalog), &request, &image, &reference, None, None).status
-    };
-    assert_eq!(status(&raw), Support::Unknown);
-    raw["bridge"] = bridge.clone();
-    assert_eq!(status(&raw), Support::Supported);
-    // Interface version 1 is one exact shape; images built for another are rebuilt.
-    raw["bridge"]["input_sources"] = json!(["file", "stdin"]);
-    assert!(FabricCatalog::from_json(&raw.to_string()).is_err());
-    raw["bridge"] = bridge.clone();
-    raw["bridge"]["interface_version"] = 2.into();
-    assert_eq!(status(&raw), Support::Unknown);
-    raw["bridge"] = bridge.clone();
-    raw["bridge"]["operations"] = json!(["configure", "check"]);
-    assert_eq!(status(&raw), Support::Unknown);
-    raw["bridge"] = bridge.clone();
-    raw["bridge"]["health_checks"] = json!(["ready"]);
-    assert_eq!(status(&raw), Support::Unknown);
-    raw["bridge"] = bridge;
-    raw["bridge"]["health_checks"] = json!(["live", "active", "ready"]);
-    assert_eq!(status(&raw), Support::Supported);
+    let catalog = catalog();
+    assert_eq!(
+        assess_image(Some(&catalog), &request, &image, &reference, None, None).status,
+        Support::Supported
+    );
 }
 
 #[test]
@@ -250,5 +228,68 @@ fn whether_a_harness_accepts_a_configuration_is_left_to_fabric() {
             .all(|check| check.requirement != "fabric_plan"),
         "{:?}",
         report.checks
+    );
+}
+
+#[test]
+fn generated_base_urls_go_only_to_adapters_that_accept_them() {
+    // Fabric rejects a normalized field an adapter does not accept, so the SDK
+    // sends its generated base URL only where the descriptor accepts one.
+    let remote = nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../../examples/fabric-remote-agent.yaml").as_slice(),
+    )
+    .unwrap();
+    let config =
+        nemoclaw_sdk::fabric_config::for_sandbox(&remote, &remote.spec.sandboxes[0]).unwrap();
+    assert!(
+        config["models"]["default"].get("base_url").is_none(),
+        "{config}"
+    );
+    assert!(
+        config["models"]["default"]["api_key_env"].is_string(),
+        "{config}"
+    );
+
+    let openclaw = nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../../examples/openclaw.yaml").as_slice(),
+    )
+    .unwrap();
+    let config =
+        nemoclaw_sdk::fabric_config::for_sandbox(&openclaw, &openclaw.spec.sandboxes[0]).unwrap();
+    assert_eq!(
+        config["models"]["default"]["base_url"],
+        "https://inference.example.com/v1"
+    );
+}
+
+#[test]
+fn declared_model_extensions_get_the_provider_api_and_authored_fields() {
+    // Pi declares `api`, `context_window`, and `max_tokens` as model extensions.
+    let pi = nemoclaw_sdk::config::Document::parse(
+        include_bytes!("../../../examples/fabric-pi.yaml").as_slice(),
+    )
+    .unwrap();
+    let model = &nemoclaw_sdk::fabric_config::for_sandbox(&pi, &pi.spec.sandboxes[0]).unwrap()["models"]
+        ["default"];
+    assert_eq!(model["api"], "openai-completions", "{model}");
+    assert_eq!(model["context_window"], 32768, "{model}");
+    assert_eq!(model["max_tokens"], 4096, "{model}");
+
+    // OpenClaw declares no model `api`, so none is sent.
+    let text = include_str!("../../../examples/openclaw.yaml");
+    let openclaw = nemoclaw_sdk::config::Document::parse(text.as_bytes()).unwrap();
+    let config =
+        nemoclaw_sdk::fabric_config::for_sandbox(&openclaw, &openclaw.spec.sandboxes[0]).unwrap();
+    assert!(config["models"]["default"].get("api").is_none(), "{config}");
+
+    // Extensions cannot replace a field the deployment sets.
+    let reserved = text.replace(
+        "                maxTokens: 8192\n",
+        "                maxTokens: 8192\n                extensions:\n                  base_url: https://elsewhere.example.com/v1\n",
+    );
+    assert_ne!(reserved, text);
+    let reserved = nemoclaw_sdk::config::Document::parse(reserved.as_bytes()).unwrap();
+    assert!(
+        nemoclaw_sdk::fabric_config::for_sandbox(&reserved, &reserved.spec.sandboxes[0]).is_err()
     );
 }
