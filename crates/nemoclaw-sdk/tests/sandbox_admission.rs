@@ -14,7 +14,7 @@ use nemoclaw_sdk::{
     compile::{self, Target},
     config::Document,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use std::fs;
 
 fn document() -> Document {
@@ -32,42 +32,12 @@ fn targets(document: &Document, generations: &compile::Generations) -> Vec<Targe
     compile::targets(document, generations).unwrap()
 }
 
-/// A completed public apply with fresh readiness observations, followed by
-/// bindings carrying the generations the SDK allocated. Scripted OpenTofu
-/// supplies observations; this does not establish provider or host behavior.
+/// A completed public apply followed by bindings carrying the generations the
+/// SDK allocated. Scripted OpenTofu supplies plans and state; this does not
+/// establish provider or host behavior.
 async fn applied(scripted: &Scripted, document: &Document) -> Deployment {
     let declared = targets(document, &placeholder_generations());
-    let mut plan: Value = serde_json::from_str(&plan_json(&declared, "create")).unwrap();
-    let mut readiness = Vec::new();
-    for sandbox in &document.spec.sandboxes {
-        let address = format!("data.fabric_agent_readiness.{}", sandbox.name);
-        plan["resource_changes"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "address": address, "mode": "data",
-                "change": {"actions": ["read"], "before": null, "after": null}
-            }));
-        readiness.push(json!({
-            "address": address, "mode": "data",
-            "values": {
-                "read_trigger": "fresh-readiness",
-                "ready": true,
-                "health_json": json!({
-                    "supported": true, "report": {"fixture": true}, "reason_code": null
-                }).to_string()
-            }
-        }));
-    }
-    scripted.set("root.apply.plan", plan.to_string());
-    scripted.set(
-        "root.state",
-        json!({
-            "format_version": "1.0",
-            "values": {"root_module": {"resources": readiness}}
-        })
-        .to_string(),
-    );
+    scripted.set("root.apply.plan", plan_json(&declared, "create"));
     let deployment = scripted.deployment(&scripted.path("unused-kubeconfig"));
     let result = deployment
         .apply(document, &CancellationToken::new())
