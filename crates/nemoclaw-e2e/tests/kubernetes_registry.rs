@@ -66,7 +66,7 @@ impl Drop for Registry {
             .stderr(Stdio::null())
             .status();
         let seed = format!(
-            "/tmp/{}/push/{}/hosts.toml",
+            "/etc/nemoclaw-registry-{}/push/{}/hosts.toml",
             self.authority.replace(':', "-"),
             self.authority
         );
@@ -264,7 +264,12 @@ impl Registry {
             )
             .as_bytes(),
         );
-        let seed = format!("/tmp/{}/push", self.authority.replace(':', "-"));
+        // Kind mounts /tmp as tmpfs, which Docker cp cannot write into.
+        // Keep seed authorization separate from the CRI hosts directory.
+        let seed = format!(
+            "/etc/nemoclaw-registry-{}/push",
+            self.authority.replace(':', "-")
+        );
         let seed_dir = format!("{seed}/{}", self.authority);
         docker(
             "create seed host directory",
