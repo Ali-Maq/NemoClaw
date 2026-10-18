@@ -1,0 +1,47 @@
+name: AYA Hermes usage
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**/usage*"
+      - "src/**/hermes-usage-script.ts"
+      - "src/lib/cli/public-display-sessions.ts"
+      - "scripts/aya/**"
+      - ".github/workflows/aya-usage.yml"
+permissions:
+  contents: read
+jobs:
+  usage-contract:
+    name: aya-usage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install pinned dependencies
+        run: |
+          node scripts/lib/openshell-sdk-install.mts prepare
+          npm ci --ignore-scripts --prefer-offline --include=optional --@nvidia:registry=https://npm.pkg.github.com
+          npm --prefix nemoclaw ci --ignore-scripts
+      - name: Build CLI
+        run: npm run build:cli
+      - name: Run agent tests
+        run: npx vitest run --project cli src/lib/actions/sandbox/sessions/usage.test.ts
+      - name: Run independent SQLite contract
+        run: python3 scripts/aya/test-session-usage.py --compiled-module dist/lib/actions/sandbox/sessions/hermes-usage-script.js --json-report usage-contract.json
+      - name: Check command routing
+        run: |
+          node bin/nemohermes.js sandbox sessions usage --help
+          node bin/nemohermes.js demo sessions usage --help
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: usage-contract
+          path: usage-contract.json
