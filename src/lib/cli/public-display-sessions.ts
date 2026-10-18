@@ -45,4 +45,12 @@ export const SANDBOX_SESSIONS_DISPLAY_LAYOUT: Record<string, readonly PublicDisp
       description: "Export agent session JSONL out of a running sandbox",
     },
   ],
+  "sandbox:sessions:usage": [
+    {
+      group: "Sandbox Management",
+      order: 17.5,
+      flags: "[--session <id>] [--include-children] [--json]",
+      description: "Report measured model usage of a Hermes sandbox",
+    },
+  ],
 };
