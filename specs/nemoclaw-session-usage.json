@@ -1,0 +1,38 @@
+{
+  "id": "nemoclaw-session-usage",
+  "target_repository": "Ali-Maq/NemoClaw",
+  "title": "Claude-style usage reports for NemoClaw Hermes sessions",
+  "reference": "https://code.claude.com/docs/en/costs",
+  "reference_kind": "documented-behavior",
+  "upstream_commit": "1e82499a048d5a4d85b0876d8c07bd93c8a9a5de",
+  "allowed_paths": [
+    "src/commands/sandbox/sessions/usage.ts",
+    "src/lib/actions/sandbox/sessions/usage.ts",
+    "src/lib/actions/sandbox/sessions/hermes-usage-script.ts",
+    "src/lib/actions/sandbox/sessions/usage.test.ts",
+    "src/lib/cli/public-display-sessions.ts"
+  ],
+  "command": "nemohermes <sandbox> sessions usage [--session <id>] [--include-children] [--json]",
+  "scope_decision": {
+    "decision": "Accept",
+    "authority": "User-authorized experiment in Ali-Maq fork; no NVIDIA approval or support implied",
+    "maintainer": "Ali-Maq",
+    "placement": "NemoClaw host CLI, Hermes only",
+    "reason": "Inspect measured model usage without exporting conversation content",
+    "compatibility": "Hermes SQLite sessions metadata; missing optional counters remain unknown",
+    "lifecycle": "Read-only inspection; no sandbox start, restart, configuration changes, or provider requests"
+  },
+  "requirements": [
+    "Use the existing NemoClaw OpenShell buffered command executor and named gateway from registry. Reject non-Hermes or unregistered sandboxes. Do not alter sandbox lifecycle or gateway selection.",
+    "Read the Hermes sessions table with sqlite mode=ro and PRAGMA query_only. Use HERMES_HOME or /sandbox/.hermes. No messages, prompts, paths, credentials or response text in output.",
+    "All sessions by default, or exact --session ID. --include-children only with --session, includes all descendants once, handles cycles without hanging. Unknown session must fail.",
+    "Python script exported as HERMES_USAGE_SCRIPT from hermes-usage-script.ts. Invoked with python3 -c SCRIPT, database path argv[1], requested session argv[2] (empty means all), include children argv[3] (1 or 0). No shell interpolation.",
+    "Stable JSON fields: schema_version=1, session_count integer, totals {api_calls,input_tokens,output_tokens,tool_calls} number|null, models array of {model,provider,session_count,api_calls,input_tokens,output_tokens,tool_calls}, incomplete_fields array of counter names, cost_usd=null. Host adds sandbox. Sort models by model then provider. Missing model/provider -> unknown.",
+    "Counter mappings: api_call_count->api_calls, tool_call_count->tool_calls. Missing column or NULL counter means unknown, not zero; affected total and affected model total must be null and appear in incomplete_fields. Empty selection all database -> 0 counts. Reject negative, noninteger or unsafe JS integer counters and overflowing totals.",
+    "Model grouping uses session metadata, not per-call attribution; report this limitation in text help. Cost is unavailable; do not invent a price.",
+    "Bound remote execution to 20 seconds, capture <=1 MiB; enforce 10000-session limit with explicit error instead of truncating. Errors must not dump raw database or transport content.",
+    "Human text shows sessions, calls, input/output tokens and unavailable cost; JSON stdout must contain only JSON. Reject unknown flags or extra positionals.",
+    "Implement focused Vitest tests using real temporary SQLite databases via Python. Cover empty store, known totals, filtered parent+children, unknown or malformed schema, NULL, missing counters, cycles, corrupt/negative counters, and absence of prompt/secret content. Tests may inject a transport for command assertions; live proof must use actual installed sandbox."
+  ],
+  "validation": "Independent host evaluator uses hidden SQLite cases, source review, TypeScript build, CLI routing/help, real read-only sandbox execution and separate database aggregate comparison."
+}
